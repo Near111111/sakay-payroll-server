@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api import auth, employees
+from app.api import auth, employees, users, system_logs  # Add system_logs
 
 app = FastAPI(
     title="Sakay Payroll System",
@@ -8,14 +8,16 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# CORS configuration - Updated to allow Frontend PC
+# CORS configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://192.168.0.110:3000",      # Frontend PC (Next.js) ✅
-        "http://192.168.0.110:5173",      # Frontend PC (Vite) ✅
-        "http://localhost:3000",           # Local testing
-        "http://localhost:5173",           # Local testing
+        "http://192.168.0.110:3000",
+        "http://192.168.0.110:5173",
+        "http://192.168.0.30:3000",
+        "http://192.168.0.30:5173",
+        "http://localhost:3000",
+        "http://localhost:5173",
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
@@ -26,6 +28,8 @@ app.add_middleware(
 # Include routers
 app.include_router(auth.router)
 app.include_router(employees.router)
+app.include_router(users.router)
+app.include_router(system_logs.router)  # Add this line
 
 
 @app.get("/")
