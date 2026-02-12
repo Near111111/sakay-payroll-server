@@ -9,10 +9,9 @@ class EmployeeBase(BaseModel):
     employee_name_ln: str
     employee_suffix: Optional[str] = None
     employee_position: Optional[str] = None
-    employee_status: Optional[str] = "Regular"  # ✅ NEW - Default to Regular
+    employee_status: Optional[str] = "Regular"
     basic_pay: Optional[float] = None
-    salary_rate: Optional[float] = None
-    salary: Optional[float] = None
+    # ✅ REMOVED: salary_rate and salary
     sss_deduction: Optional[float] = None
     phic_deduction: Optional[float] = None
     pagibig_deduction: Optional[float] = None
@@ -36,7 +35,6 @@ class EmployeeCreate(EmployeeBase):
         if v is None:
             return "Regular"
         
-        # ✅ Dropdown values
         valid_statuses = ["Regular", "Probationary", "Contractual", "Project-based"]
         if v not in valid_statuses:
             raise ValueError(f'Status must be one of: {", ".join(valid_statuses)}')
@@ -50,10 +48,9 @@ class EmployeeUpdate(BaseModel):
     employee_name_ln: Optional[str] = None
     employee_suffix: Optional[str] = None
     employee_position: Optional[str] = None
-    employee_status: Optional[str] = None  # ✅ NEW
+    employee_status: Optional[str] = None
     basic_pay: Optional[float] = None
-    salary_rate: Optional[float] = None
-    salary: Optional[float] = None
+    # ✅ REMOVED: salary_rate and salary
     sss_deduction: Optional[float] = None
     phic_deduction: Optional[float] = None
     pagibig_deduction: Optional[float] = None
@@ -73,6 +70,7 @@ class EmployeeResponse(EmployeeBase):
     employee_id: int
     created_at: datetime
     created_by: Optional[int] = None
+    image_metadata: Optional[str] = None
     
     class Config:
         from_attributes = True

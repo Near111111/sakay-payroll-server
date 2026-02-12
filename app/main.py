@@ -1,41 +1,40 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api import auth, employees, users, system_logs  # Add system_logs
+from app.api import auth, users, employees, system_logs, payrolls  # ✅ Add payrolls
+from app.core.config import settings
 
 app = FastAPI(
-    title="Sakay Payroll System",
-    description="Secure Payroll Management API with JWT Authentication",
+    title="Payroll Management System",
+    description="Payroll system with JWT authentication",
     version="1.0.0"
 )
 
-# CORS configuration
+# CORS Configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://192.168.0.110:3000",
-        "http://192.168.0.110:5173",
-        "http://192.168.0.30:3000",
-        "http://192.168.0.30:5173",
         "http://localhost:3000",
-        "http://localhost:5173",
+        "http://192.168.0.110:3000",
+        "http://192.168.0.30:3000",
+        "http://192.168.0.54:3000"
     ],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
-    allow_headers=["Authorization", "Content-Type"],
-    expose_headers=["*"]
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# Include routers
+# Include Routers
 app.include_router(auth.router)
-app.include_router(employees.router)
 app.include_router(users.router)
-app.include_router(system_logs.router)  # Add this line
+app.include_router(employees.router)
+app.include_router(system_logs.router)
+app.include_router(payrolls.router)  # ✅ Add this
 
 
 @app.get("/")
 def read_root():
     return {
-        "message": "Sakay Payroll API",
+        "message": "Payroll Management System API",
         "version": "1.0.0",
-        "status": "running"
+        "docs": "/docs"
     }

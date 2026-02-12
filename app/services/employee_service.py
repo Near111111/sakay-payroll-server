@@ -97,7 +97,7 @@ class EmployeeService:
             - Auto-generates next employee_id
             - Validates required fields (first name, last name)
             - Sets default status to "Regular" if not provided
-            - Creates system log with all name components (fn, mi, ln, suffix)
+            - Creates system log with all name components
         """
         try:
             # Get next available employee_id
@@ -116,8 +116,7 @@ class EmployeeService:
                 "employee_position": employee_data.employee_position,
                 "employee_status": employee_data.employee_status or "Regular",
                 "basic_pay": employee_data.basic_pay,
-                "salary_rate": employee_data.salary_rate,
-                "salary": employee_data.salary,
+                # ✅ REMOVED: salary_rate and salary
                 "sss_deduction": employee_data.sss_deduction,
                 "phic_deduction": employee_data.phic_deduction,
                 "pagibig_deduction": employee_data.pagibig_deduction,
@@ -134,7 +133,7 @@ class EmployeeService:
             
             created_employee = result.data[0]
             
-            # Create system log with all name components (independent storage, no foreign key)
+            # Create system log with all name components
             await self.log_service.create_log(SystemLogCreate(
                 user_id=created_by_user_id,
                 activity_type="ADD",
@@ -169,7 +168,7 @@ class EmployeeService:
         Features:
             - Validates employee exists before updating
             - Supports partial updates (only provided fields)
-            - Creates system log with current name components (fn, mi, ln, suffix)
+            - Creates system log with current name components
         
         Raises:
             404: Employee not found
@@ -224,18 +223,11 @@ class EmployeeService:
             - Validates employee exists before deleting
             - CASCADE DELETE automatically removes all payroll records
             - Creates system log with all name components BEFORE deletion
-            - Logs remain intact with employee info after deletion (no foreign key)
+            - Logs remain intact with employee info after deletion
         
         Database CASCADE behavior:
             - Deletes all payroll records for this employee (payrolls table)
             - Keeps system logs intact (no foreign key relationship)
-        
-        System logs store:
-            - employee_id (just a number, not a foreign key)
-            - employee_name_fn (first name)
-            - employee_name_mi (middle initial)
-            - employee_name_ln (last name)
-            - employee_suffix (Jr., Sr., III, etc.)
         
         Raises:
             404: Employee not found
@@ -250,7 +242,7 @@ class EmployeeService:
                     detail=f"Employee with ID {employee_id} not found"
                 )
             
-            # Get employee info BEFORE deleting (for log and response message)
+            # Get employee info BEFORE deleting
             emp = existing.data[0]
             
             # Build full name with suffix for display
@@ -262,14 +254,12 @@ class EmployeeService:
             if emp.get('employee_suffix'):
                 full_name_parts.append(emp['employee_suffix'])
             
-            # Join and clean up extra spaces
             full_name = ' '.join(filter(None, full_name_parts)).strip()
             
             # Delete employee (CASCADE will auto-delete payroll records)
             self.supabase.table('employees').delete().eq('employee_id', employee_id).execute()
             
-            # Create system log with all name components (employee already deleted, but we have the data!)
-            # Logs are independent - no foreign key, so they remain intact forever
+            # Create system log with all name components
             await self.log_service.create_log(SystemLogCreate(
                 user_id=deleted_by_user_id,
                 activity_type="DELETE",
