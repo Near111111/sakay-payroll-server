@@ -1,10 +1,11 @@
-fastapi==0.100.0
-uvicorn==0.23.2
+fastapi==0.115.0
+uvicorn==0.30.0
 sqlalchemy==2.0.20
-pydantic==2.4.2
+pydantic==2.9.0
 python-jose==3.3.0
 passlib==1.7.4
 python-multipart==0.0.6
 python-dotenv==1.0.0
 pytz==2023.3
 supabase==2.3.4
+bcrypt==4.0.1
