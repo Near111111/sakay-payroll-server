@@ -17,7 +17,7 @@ app.add_middleware(
         "http://localhost:3000",
         "http://192.168.0.110:3000",
         "http://192.168.0.30:3000",
-        "https://sakay-ph-frontend-payroll.vercel.app"
+        "https://sakay-ph-frontend-payroll.vercel.app",
         "http://192.168.0.54:3000"
     ],
     allow_credentials=True,
