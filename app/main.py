@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api import auth, users, employees, system_logs, payrolls  # ✅ Add payrolls
 from app.core.config import settings
+from app.api import auth, users, employees, system_logs, payrolls, archives
 
 app = FastAPI(
     title="Payroll Management System",
@@ -16,7 +17,9 @@ app.add_middleware(
         "http://localhost:3000",
         "http://192.168.0.110:3000",
         "http://192.168.0.30:3000",
+        "https://sakay-ph-frontend-payroll.vercel.app"
         "http://192.168.0.54:3000"
+        "http://192.168.0.226:3000"
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -28,7 +31,8 @@ app.include_router(auth.router)
 app.include_router(users.router)
 app.include_router(employees.router)
 app.include_router(system_logs.router)
-app.include_router(payrolls.router)  # ✅ Add this
+app.include_router(payrolls.router)
+app.include_router(archives.router)  # ✅ Add this
 
 
 @app.get("/")
