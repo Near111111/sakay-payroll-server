@@ -41,3 +41,9 @@ def read_root():
         "version": "1.0.0",
         "docs": "/docs"
     }
+
+@app.get("/health")
+def health():
+    return {
+        "status": "healthy",
+    }
