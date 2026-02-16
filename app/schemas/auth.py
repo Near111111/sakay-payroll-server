@@ -18,6 +18,13 @@ class UserRegister(BaseModel):
         if len(v) < 8:  # Stronger requirement for admin
             raise ValueError('Password must be at least 8 characters')
         return v
+    
+    @field_validator('user_role')
+    def validate_user_role(cls, v):
+        valid_roles = ["admin", "super_admin"]
+        if v not in valid_roles:
+            raise ValueError(f'User role must be one of: {valid_roles}')
+        return v
 
 
 class UserLogin(BaseModel):

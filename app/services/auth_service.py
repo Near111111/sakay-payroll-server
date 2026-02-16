@@ -16,13 +16,14 @@ class AuthService:
         self.supabase = get_supabase()
     
     async def register_user(self, user_data: UserRegister):
-        """Register a new admin user"""
+        """Register a new admin or super_admin user"""
         try:
-            # Force admin role only
-            if user_data.user_role != "admin":
+            # Allow admin and super_admin roles
+            valid_roles = ["admin", "super_admin"]
+            if user_data.user_role not in valid_roles:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Only admin users can be registered"
+                    detail=f"User role must be one of: {valid_roles}"
                 )
             
             # Check if username already exists
@@ -37,11 +38,11 @@ class AuthService:
             # Hash the password
             hashed_password = hash_password(user_data.user_password)
             
-            # Insert new admin user
+            # Insert new user with specified role
             new_user = {
                 "username": user_data.username,
                 "user_password": hashed_password,
-                "user_role": "admin"  # Always admin
+                "user_role": user_data.user_role
             }
             
             result = self.supabase.table('users').insert(new_user).execute()
@@ -62,7 +63,7 @@ class AuthService:
             )
     
     async def login_user(self, user_data: UserLogin):
-        """Login admin user and return tokens"""
+        """Login admin or super_admin user and return tokens"""
         try:
             # Find user by username
             user = self.supabase.table('users').select('*').eq('username', user_data.username).execute()
@@ -76,11 +77,11 @@ class AuthService:
             
             user_record = user.data[0]
             
-            # Check if user is admin
-            if user_record['user_role'] != "admin":
+            # Check if user is admin or super_admin
+            if user_record['user_role'] not in ("admin", "super_admin"):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Access denied. Admin only."
+                    detail="Access denied. Admin access required."
                 )
             
             # Verify password
@@ -91,11 +92,11 @@ class AuthService:
                     headers={"WWW-Authenticate": "Bearer"}
                 )
             
-            # Create token payload
+            # Create token payload with actual user role
             token_data = {
                 "sub": user_record['username'],
                 "user_id": user_record['user_id'],
-                "user_role": "admin"
+                "user_role": user_record['user_role']
             }
             
             # Create tokens
@@ -110,7 +111,7 @@ class AuthService:
                 "user": {
                     "user_id": user_record['user_id'],
                     "username": user_record['username'],
-                    "user_role": "admin"
+                    "user_role": user_record['user_role']
                 }
             }
         except HTTPException:
@@ -134,18 +135,18 @@ class AuthService:
                     headers={"WWW-Authenticate": "Bearer"}
                 )
             
-            # Verify it's an admin
-            if payload.get("user_role") != "admin":
+            # Verify it's an admin or super_admin
+            if payload.get("user_role") not in ("admin", "super_admin"):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Access denied"
                 )
             
-            # Create new access token
+            # Create new access token with actual user role
             new_token_data = {
                 "sub": payload.get("sub"),
                 "user_id": payload.get("user_id"),
-                "user_role": "admin"
+                "user_role": payload.get("user_role")
             }
             
             access_token = create_access_token(data=new_token_data)
