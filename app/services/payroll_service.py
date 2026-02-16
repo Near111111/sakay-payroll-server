@@ -146,6 +146,7 @@ class PayrollService:
                 "period_start_date": payroll_data.period_start_date.isoformat() if payroll_data.period_start_date else None,
                 "period_end_date": payroll_data.period_end_date.isoformat() if payroll_data.period_end_date else None,
                 "other_deductions": other_deductions,
+                "deduction_reason": payroll_data.deduction_reason,
                 "total_deduction": round(total_deduction, 2),  # ✅ AUTO
                 "gross_pay": round(gross_pay, 2),  # ✅ AUTO
                 "net_pay": round(net_pay, 2),  # ✅ AUTO

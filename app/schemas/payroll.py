@@ -15,6 +15,7 @@ class PayrollBase(BaseModel):
     period_start_date: Optional[date] = None
     period_end_date: Optional[date] = None
     other_deductions: Optional[float] = None
+    deduction_reason: Optional[str] = None
     total_deduction: Optional[float] = None
     gross_pay: Optional[float] = None
     net_pay: Optional[float] = None
@@ -55,6 +56,7 @@ class PayrollUpdate(BaseModel):
     period_start_date: Optional[date] = None
     period_end_date: Optional[date] = None
     other_deductions: Optional[float] = None
+    deduction_reason: Optional[str] = None
     total_deduction: Optional[float] = None
     gross_pay: Optional[float] = None
     net_pay: Optional[float] = None

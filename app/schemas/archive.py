@@ -30,6 +30,7 @@ class ArchivePayrollResponse(BaseModel):
     period_start_date: date
     period_end_date: date
     other_deductions: float
+    deduction_reason: Optional[str]
     total_deduction: float
     gross_pay: float
     net_pay: float
