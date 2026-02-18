@@ -22,7 +22,7 @@ auth_service = AuthService()
 
 
 # ─────────────────────────────────────────────
-# EXISTING: Original endpoints (kept for backward compat)
+# EXISTING: Original endpoints (backward compat)
 # ─────────────────────────────────────────────
 
 @router.post("/register", response_model=UserResponse, status_code=201)
@@ -30,17 +30,13 @@ auth_service = AuthService()
 async def register(request: Request, user: UserRegister):
     """Register a new ADMIN user (original - no OTP)"""
     new_user = await auth_service.register_user(user)
-    return {
-        "user_id": new_user["user_id"],
-        "username": new_user["username"],
-        "user_role": new_user["user_role"]
-    }
+    return {"user_id": new_user["user_id"], "username": new_user["username"], "user_role": new_user["user_role"]}
 
 
 @router.post("/login", response_model=TokenResponse)
 @limiter.limit("5/minute")
 async def login(request: Request, user: UserLogin):
-    """Admin login - Get access token + refresh token (original - no OTP)"""
+    """Admin login (original - no OTP)"""
     return await auth_service.login_user(user)
 
 
@@ -54,7 +50,7 @@ async def refresh_token(request: Request, token_data: TokenRefresh):
 @router.post("/logout")
 @limiter.limit("20/minute")
 async def logout(request: Request, current_admin: TokenData = Depends(get_current_admin)):
-    """Logout current user (client-side token deletion)"""
+    """Logout current user"""
     return {
         "message": f"User {current_admin.username} logged out successfully",
         "user_id": current_admin.user_id,
@@ -63,7 +59,7 @@ async def logout(request: Request, current_admin: TokenData = Depends(get_curren
 
 
 # ─────────────────────────────────────────────
-# NEW: OTP Register Flow
+# OTP Register Flow
 # ─────────────────────────────────────────────
 
 @router.post("/register/send-otp", response_model=OTPSentResponse)
@@ -72,8 +68,8 @@ async def register_send_otp(request: Request, data: OTPRequest):
     """
     Step 1 - Register: Send OTP to phone number
     
-    - Validates phone number is not already registered
-    - Sends 6-digit OTP via txtbox SMS
+    - I-input ang phone number ng bagong user
+    - Mag-se-send ng OTP sa phone
     - OTP expires in 5 minutes
     """
     return await auth_service.send_register_otp(data.phone_number)
@@ -85,36 +81,31 @@ async def register_verify_otp(request: Request, data: OTPVerifyRegister):
     """
     Step 2 - Register: Verify OTP and create user
     
-    - Verifies the 6-digit OTP code
-    - Creates user account with phone number
-    - OTP is invalidated after use
+    - I-input ang username, password, role, phone number, at OTP
+    - Gagawa ng user account na may phone number
     """
     new_user = await auth_service.verify_register_otp(data)
-    return {
-        "user_id": new_user["user_id"],
-        "username": new_user["username"],
-        "user_role": new_user["user_role"]
-    }
+    return {"user_id": new_user["user_id"], "username": new_user["username"], "user_role": new_user["user_role"]}
 
 
 # ─────────────────────────────────────────────
-# NEW: OTP Login Flow
+# OTP Login Flow
 # ─────────────────────────────────────────────
 
 @router.post("/login/send-otp", response_model=OTPSentResponse)
 @limiter.limit("5/minute")
 async def login_send_otp(request: Request, data: LoginOTPRequest):
     """
-    Step 1 - Login: Validate credentials + send OTP to phone
-    
-    - Validates username, password, and phone number match
-    - Sends 6-digit OTP via txtbox SMS
-    - OTP expires in 5 minutes
+    Step 1 - Login: Validate credentials then send OTP
+
+    - I-input lang ang username at password
+    - Automatic na kukunin ang phone number from database
+    - OTP ipapadala sa registered phone number ng user
+    - Phone number ay masked sa response (e.g. 0956****594)
     """
     return await auth_service.send_login_otp(
         username=data.username,
-        user_password=data.user_password,
-        phone_number=data.phone_number
+        user_password=data.user_password
     )
 
 
@@ -123,9 +114,9 @@ async def login_send_otp(request: Request, data: LoginOTPRequest):
 async def login_verify_otp(request: Request, data: OTPVerifyLogin):
     """
     Step 2 - Login: Verify OTP and return tokens
-    
-    - Verifies the 6-digit OTP code
-    - Returns access_token + refresh_token
-    - OTP is invalidated after use
+
+    - I-input ang username, password, at OTP code lang
+    - Hindi na kailangan ng phone number — automatic na kukunin from DB
+    - Mag-re-return ng access_token + refresh_token
     """
     return await auth_service.verify_login_otp(data)

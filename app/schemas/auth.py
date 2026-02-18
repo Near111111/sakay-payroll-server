@@ -56,7 +56,7 @@ class UserResponse(BaseModel):
 
 
 # ─────────────────────────────────────────────
-# NEW: OTP Schemas
+# OTP Schemas
 # ─────────────────────────────────────────────
 
 class OTPRequest(BaseModel):
@@ -105,11 +105,16 @@ class OTPVerifyRegister(BaseModel):
         return v
 
 
-class OTPVerifyLogin(BaseModel):
-    """Step 2 - Login: Credentials + OTP code"""
+class LoginOTPRequest(BaseModel):
+    """Step 1 - Login: username + password lang, phone number kukunin from DB"""
     username: str
     user_password: str
-    phone_number: str
+
+
+class OTPVerifyLogin(BaseModel):
+    """Step 2 - Login: username + password + OTP code lang, hindi na kailangan ng phone"""
+    username: str
+    user_password: str
     otp_code: str
 
     @field_validator('otp_code')
@@ -117,13 +122,6 @@ class OTPVerifyLogin(BaseModel):
         if not v or len(v) != 6 or not v.isdigit():
             raise ValueError('OTP must be a 6-digit number')
         return v
-
-
-class LoginOTPRequest(BaseModel):
-    """Step 1 - Login: Credentials + phone number"""
-    username: str
-    user_password: str
-    phone_number: str
 
 
 class OTPSentResponse(BaseModel):
