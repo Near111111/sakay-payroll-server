@@ -5,7 +5,12 @@ from app.schemas.auth import (
     UserLogin, 
     TokenResponse,
     TokenRefresh,
-    TokenData
+    TokenData,
+    OTPRequest,
+    OTPVerifyRegister,
+    OTPVerifyLogin,
+    LoginOTPRequest,
+    OTPSentResponse
 )
 from app.services.auth_service import AuthService
 from app.core.dependencies import get_current_admin
@@ -16,10 +21,14 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 auth_service = AuthService()
 
 
+# ─────────────────────────────────────────────
+# EXISTING: Original endpoints (kept for backward compat)
+# ─────────────────────────────────────────────
+
 @router.post("/register", response_model=UserResponse, status_code=201)
 @limiter.limit("5/minute")
 async def register(request: Request, user: UserRegister):
-    """Register a new ADMIN user"""
+    """Register a new ADMIN user (original - no OTP)"""
     new_user = await auth_service.register_user(user)
     return {
         "user_id": new_user["user_id"],
@@ -31,7 +40,7 @@ async def register(request: Request, user: UserRegister):
 @router.post("/login", response_model=TokenResponse)
 @limiter.limit("5/minute")
 async def login(request: Request, user: UserLogin):
-    """Admin login - Get access token + refresh token"""
+    """Admin login - Get access token + refresh token (original - no OTP)"""
     return await auth_service.login_user(user)
 
 
@@ -45,14 +54,78 @@ async def refresh_token(request: Request, token_data: TokenRefresh):
 @router.post("/logout")
 @limiter.limit("20/minute")
 async def logout(request: Request, current_admin: TokenData = Depends(get_current_admin)):
-    """
-    Logout current user
-    
-    Client-side logout (JWT tokens are stateless)
-    Frontend should delete tokens from localStorage after calling this.
-    """
+    """Logout current user (client-side token deletion)"""
     return {
         "message": f"User {current_admin.username} logged out successfully",
         "user_id": current_admin.user_id,
         "username": current_admin.username
     }
+
+
+# ─────────────────────────────────────────────
+# NEW: OTP Register Flow
+# ─────────────────────────────────────────────
+
+@router.post("/register/send-otp", response_model=OTPSentResponse)
+@limiter.limit("5/minute")
+async def register_send_otp(request: Request, data: OTPRequest):
+    """
+    Step 1 - Register: Send OTP to phone number
+    
+    - Validates phone number is not already registered
+    - Sends 6-digit OTP via txtbox SMS
+    - OTP expires in 5 minutes
+    """
+    return await auth_service.send_register_otp(data.phone_number)
+
+
+@router.post("/register/verify-otp", response_model=UserResponse, status_code=201)
+@limiter.limit("5/minute")
+async def register_verify_otp(request: Request, data: OTPVerifyRegister):
+    """
+    Step 2 - Register: Verify OTP and create user
+    
+    - Verifies the 6-digit OTP code
+    - Creates user account with phone number
+    - OTP is invalidated after use
+    """
+    new_user = await auth_service.verify_register_otp(data)
+    return {
+        "user_id": new_user["user_id"],
+        "username": new_user["username"],
+        "user_role": new_user["user_role"]
+    }
+
+
+# ─────────────────────────────────────────────
+# NEW: OTP Login Flow
+# ─────────────────────────────────────────────
+
+@router.post("/login/send-otp", response_model=OTPSentResponse)
+@limiter.limit("5/minute")
+async def login_send_otp(request: Request, data: LoginOTPRequest):
+    """
+    Step 1 - Login: Validate credentials + send OTP to phone
+    
+    - Validates username, password, and phone number match
+    - Sends 6-digit OTP via txtbox SMS
+    - OTP expires in 5 minutes
+    """
+    return await auth_service.send_login_otp(
+        username=data.username,
+        user_password=data.user_password,
+        phone_number=data.phone_number
+    )
+
+
+@router.post("/login/verify-otp", response_model=TokenResponse)
+@limiter.limit("5/minute")
+async def login_verify_otp(request: Request, data: OTPVerifyLogin):
+    """
+    Step 2 - Login: Verify OTP and return tokens
+    
+    - Verifies the 6-digit OTP code
+    - Returns access_token + refresh_token
+    - OTP is invalidated after use
+    """
+    return await auth_service.verify_login_otp(data)
