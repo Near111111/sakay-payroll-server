@@ -1,14 +1,26 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api import auth, users, employees, system_logs, payrolls  # ✅ Add payrolls
-from app.core.config import settings
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 from app.api import auth, users, employees, system_logs, payrolls, archives
+from app.core.config import settings
+from app.core.limiter import limiter
 
 app = FastAPI(
     title="Payroll Management System",
     description="Payroll system with JWT authentication",
     version="1.0.0"
 )
+
+# Attach rate limiter to app state
+app.state.limiter = limiter
+
+# Register 429 Too Many Requests error handler
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# Rate limiting middleware (must come before CORS in the stack)
+app.add_middleware(SlowAPIMiddleware)
 
 # CORS Configuration
 app.add_middleware(
@@ -31,7 +43,7 @@ app.include_router(users.router)
 app.include_router(employees.router)
 app.include_router(system_logs.router)
 app.include_router(payrolls.router)
-app.include_router(archives.router)  # ✅ Add this
+app.include_router(archives.router)
 
 
 @app.get("/")
