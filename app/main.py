@@ -1,11 +1,13 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from app.api import auth, users, employees, system_logs, payrolls, archives
 from app.core.config import settings
 from app.core.limiter import limiter
+import re
 
 app = FastAPI(
     title="Payroll Management System",
@@ -13,16 +15,34 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Attach rate limiter to app state
+# ─────────────────────────────────────────────
+# SQL Injection Protection Middleware
+# ─────────────────────────────────────────────
+SQL_INJECTION_PATTERNS = re.compile(
+    r"(select|union|insert|update|delete|drop|cast|convert|declare|exec|execute|--|;|'|%27|%3B|%2D%2D)",
+    re.IGNORECASE
+)
+
+@app.middleware("http")
+async def block_sql_injection(request: Request, call_next):
+    # Check URL path for SQL injection patterns
+    if SQL_INJECTION_PATTERNS.search(str(request.url.path)):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Bad request"}
+        )
+    return await call_next(request)
+
+# ─────────────────────────────────────────────
+# Rate Limiter
+# ─────────────────────────────────────────────
 app.state.limiter = limiter
-
-# Register 429 Too Many Requests error handler
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-
-# Rate limiting middleware (must come before CORS in the stack)
 app.add_middleware(SlowAPIMiddleware)
 
-# CORS Configuration
+# ─────────────────────────────────────────────
+# CORS
+# ─────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -37,7 +57,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include Routers
+# ─────────────────────────────────────────────
+# Routers
+# ─────────────────────────────────────────────
 app.include_router(auth.router)
 app.include_router(users.router)
 app.include_router(employees.router)
