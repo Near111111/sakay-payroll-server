@@ -16,24 +16,6 @@ app = FastAPI(
 )
 
 # ─────────────────────────────────────────────
-# SQL Injection Protection Middleware
-# ─────────────────────────────────────────────
-SQL_INJECTION_PATTERNS = re.compile(
-    r"(select|union|insert|update|delete|drop|cast|convert|declare|exec|execute|--|;|'|%27|%3B|%2D%2D)",
-    re.IGNORECASE
-)
-
-@app.middleware("http")
-async def block_sql_injection(request: Request, call_next):
-    # Check URL path for SQL injection patterns
-    if SQL_INJECTION_PATTERNS.search(str(request.url.path)):
-        return JSONResponse(
-            status_code=400,
-            content={"detail": "Bad request"}
-        )
-    return await call_next(request)
-
-# ─────────────────────────────────────────────
 # Rate Limiter
 # ─────────────────────────────────────────────
 app.state.limiter = limiter
@@ -56,6 +38,27 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ─────────────────────────────────────────────
+# SQL Injection Protection
+# (Ginawa bilang route handler, hindi middleware
+#  para maiwasan ang conflict sa SlowAPI)
+# ─────────────────────────────────────────────
+SQL_INJECTION_PATTERNS = re.compile(
+    r"(select|union|insert|update|delete|drop|cast|convert|declare|exec|execute|--|;|'|%27|%3B|%2D%2D)",
+    re.IGNORECASE
+)
+
+@app.middleware("http")
+async def block_sql_injection(request: Request, call_next):
+    if SQL_INJECTION_PATTERNS.search(str(request.url.path)):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Bad request"}
+        )
+    # Must await and return properly to avoid RuntimeError
+    response = await call_next(request)
+    return response
 
 # ─────────────────────────────────────────────
 # Routers
