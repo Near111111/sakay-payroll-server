@@ -42,7 +42,7 @@ class OTPService:
         # Docs: header is X-TXTBOX-Auth, body fields are "number" and "message"
         payload = {
             "number": phone_number,
-            "message": f"Your OTP code is: {otp_code}. It expires in {self.OTP_EXPIRY_MINUTES} minutes. Do not share this with anyone."
+            "message": f"Your OTP code is: {otp_code} from Sakay ph. It expires in {self.OTP_EXPIRY_MINUTES} minutes. Do not share this with anyone."
         }
 
         headers = {
