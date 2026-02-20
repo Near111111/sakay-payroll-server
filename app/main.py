@@ -6,6 +6,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from app.api import auth, users, employees, system_logs, payrolls, archives
 from app.core.config import settings
+from app.api import auth, users, employees, system_logs, payrolls, archives, inventory
 from app.core.limiter import limiter
 import re
 
@@ -68,6 +69,7 @@ app.include_router(users.router)
 app.include_router(employees.router)
 app.include_router(system_logs.router)
 app.include_router(payrolls.router)
+app.include_router(inventory.router)
 app.include_router(archives.router)
 
 
