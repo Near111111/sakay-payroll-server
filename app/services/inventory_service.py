@@ -2,6 +2,7 @@ from app.core.supabase_client import get_supabase
 from app.schemas.inventory import ItemCreate, ItemUpdate, TransactionCreate
 from fastapi import HTTPException, status
 from datetime import datetime
+from typing import List
 
 
 class InventoryService:
@@ -47,11 +48,9 @@ class InventoryService:
             total_stock = 0
 
             for variant in variants.data:
-                # Get stock for this variant
                 variant_stock = self._get_variant_stock(variant['variant_id'])
                 total_stock += variant_stock
 
-                # Get variant values
                 values = self.supabase.table('inventory_variant_values').select(
                     '*, inventory_attributes(attribute_name)'
                 ).eq('variant_id', variant['variant_id']).execute()
@@ -70,7 +69,6 @@ class InventoryService:
                     "values": values_result
                 })
 
-            # If no variants, get stock directly from item transactions
             if not variants.data:
                 total_stock = self._get_item_stock_no_variant(item_id)
 
@@ -88,7 +86,6 @@ class InventoryService:
     async def create_item(self, item_data: ItemCreate):
         """Create item with optional attributes and variants"""
         try:
-            # 1. Insert item
             result = self.supabase.table('inventory_items').insert({
                 "name": item_data.name,
                 "description": item_data.description
@@ -98,9 +95,8 @@ class InventoryService:
                 raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create item")
 
             item_id = result.data[0]['item_id']
-            attr_id_map = {}  # maps index to actual attr_id
+            attr_id_map = {}
 
-            # 2. Insert attributes if any
             if item_data.attributes:
                 for attr in item_data.attributes:
                     attr_result = self.supabase.table('inventory_attributes').insert({
@@ -110,7 +106,6 @@ class InventoryService:
                     if attr_result.data:
                         attr_id_map[attr.attribute_name] = attr_result.data[0]['attr_id']
 
-            # 3. Insert variants if any
             if item_data.variants:
                 for variant in item_data.variants:
                     variant_result = self.supabase.table('inventory_variants').insert({
@@ -119,13 +114,56 @@ class InventoryService:
 
                     if variant_result.data:
                         variant_id = variant_result.data[0]['variant_id']
-
-                        # Insert variant values
                         for val in variant.values:
                             self.supabase.table('inventory_variant_values').insert({
                                 "variant_id": variant_id,
                                 "attr_id": val.attr_id,
                                 "value": val.value
+                            }).execute()
+
+            return await self.get_item_by_id(item_id)
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+    async def add_variants_to_item(self, item_id: int, variants_data: List[dict]):
+        """
+        Add variants to an existing item.
+        Frontend sends attr_name (not attr_id) — backend resolves the real attr_id
+        from the item's own attributes table.
+        """
+        try:
+            # Validate item exists
+            item = self.supabase.table('inventory_items').select('*').eq('item_id', item_id).execute()
+            if not item.data:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found")
+
+            # Get attributes of this item → build name → attr_id map
+            attrs = self.supabase.table('inventory_attributes').select('*').eq('item_id', item_id).execute()
+            if not attrs.data:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Item has no attributes defined")
+
+            # lowercase name → attr_id
+            attr_map = {a['attribute_name'].lower(): a['attr_id'] for a in attrs.data}
+
+            for variant in variants_data:
+                variant_result = self.supabase.table('inventory_variants').insert({
+                    "item_id": item_id
+                }).execute()
+
+                if variant_result.data:
+                    variant_id = variant_result.data[0]['variant_id']
+                    for val in variant.get('values', []):
+                        attr_name = val.get('attr_name', '').lower()
+                        attr_id = attr_map.get(attr_name)
+                        value = val.get('value', '').strip()
+
+                        if attr_id and value:
+                            self.supabase.table('inventory_variant_values').insert({
+                                "variant_id": variant_id,
+                                "attr_id": attr_id,
+                                "value": value
                             }).execute()
 
             return await self.get_item_by_id(item_id)
@@ -142,7 +180,7 @@ class InventoryService:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Item {item_id} not found")
 
             update_dict = item_data.model_dump(exclude_unset=True)
-            result = self.supabase.table('inventory_items').update(update_dict).eq('item_id', item_id).execute()
+            self.supabase.table('inventory_items').update(update_dict).eq('item_id', item_id).execute()
 
             return await self.get_item_by_id(item_id)
         except HTTPException:
@@ -171,12 +209,10 @@ class InventoryService:
     async def create_transaction(self, transaction_data: TransactionCreate, user_id: int):
         """Stock IN or OUT"""
         try:
-            # Validate item exists
             item = self.supabase.table('inventory_items').select('*').eq('item_id', transaction_data.item_id).execute()
             if not item.data:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found")
 
-            # If OUT, check sufficient stock
             if transaction_data.type == "OUT":
                 if transaction_data.variant_id:
                     current = self._get_variant_stock(transaction_data.variant_id)
@@ -218,7 +254,6 @@ class InventoryService:
                 query = query.eq('item_id', item_id)
 
             if date:
-                # Single day — from 00:00 to 23:59
                 query = query.gte('created_at', f"{date}T00:00:00").lte('created_at', f"{date}T23:59:59")
             elif date_from and date_to:
                 query = query.gte('created_at', f"{date_from}T00:00:00").lte('created_at', f"{date_to}T23:59:59")
@@ -227,7 +262,6 @@ class InventoryService:
 
             transactions = []
             for t in result.data:
-                # Build variant label (e.g. "S / Red")
                 variant_label = None
                 if t.get('variant_id'):
                     variant_label = await self._get_variant_label(t['variant_id'])
@@ -246,50 +280,30 @@ class InventoryService:
     # HELPERS
     # ─────────────────────────────────────────────
     async def _get_total_stock(self, item_id: int) -> int:
-        """Get total stock of an item across all variants"""
         result = self.supabase.table('inventory_transactions').select('type, quantity').eq('item_id', item_id).execute()
-
         total = 0
         for t in result.data:
-            if t['type'] == 'IN':
-                total += t['quantity']
-            else:
-                total -= t['quantity']
+            total += t['quantity'] if t['type'] == 'IN' else -t['quantity']
         return max(total, 0)
 
     def _get_variant_stock(self, variant_id: int) -> int:
-        """Get stock for a specific variant"""
         result = self.supabase.table('inventory_transactions').select('type, quantity').eq('variant_id', variant_id).execute()
-
         total = 0
         for t in result.data:
-            if t['type'] == 'IN':
-                total += t['quantity']
-            else:
-                total -= t['quantity']
+            total += t['quantity'] if t['type'] == 'IN' else -t['quantity']
         return max(total, 0)
 
     def _get_item_stock_no_variant(self, item_id: int) -> int:
-        """Get stock for items with no variants"""
         result = self.supabase.table('inventory_transactions').select('type, quantity').eq(
             'item_id', item_id
         ).is_('variant_id', 'null').execute()
-
         total = 0
         for t in result.data:
-            if t['type'] == 'IN':
-                total += t['quantity']
-            else:
-                total -= t['quantity']
+            total += t['quantity'] if t['type'] == 'IN' else -t['quantity']
         return max(total, 0)
 
     async def _get_variant_label(self, variant_id: int) -> str:
-        """Build readable label for variant e.g. 'S / Red'"""
-        values = self.supabase.table('inventory_variant_values').select(
-            'value'
-        ).eq('variant_id', variant_id).execute()
-
+        values = self.supabase.table('inventory_variant_values').select('value').eq('variant_id', variant_id).execute()
         if not values.data:
             return None
-
         return " / ".join([v['value'] for v in values.data])

@@ -7,7 +7,7 @@ from app.schemas.inventory import (
     TransactionCreate, TransactionListResponse
 )
 from app.services.inventory_service import InventoryService
-from typing import Optional
+from typing import Optional, List, Any
 
 router = APIRouter(prefix="/inventory", tags=["Inventory"])
 
@@ -40,31 +40,27 @@ async def create_item(
     item: ItemCreate,
     current_admin: TokenData = Depends(get_current_admin)
 ):
-    """
-    Create new item with optional attributes and variants.
-
-    Example — Item with no variants (Helmet):
-    {
-      "name": "Helmet",
-      "description": "Safety helmet",
-      "attributes": [],
-      "variants": []
-    }
-
-    Example — Item with variants (Longsleeves):
-    {
-      "name": "Longsleeves",
-      "attributes": [
-        {"attribute_name": "size"},
-        {"attribute_name": "color"}
-      ],
-      "variants": [
-        {"values": [{"attr_id": 1, "value": "S"}, {"attr_id": 2, "value": "Red"}]},
-        {"values": [{"attr_id": 1, "value": "M"}, {"attr_id": 2, "value": "Blue"}]}
-      ]
-    }
-    """
+    """Create new item with optional attributes (no variants yet)"""
     return await inventory_service.create_item(item)
+
+
+@router.post("/items/{item_id}/variants", status_code=201)
+async def add_variants(
+    item_id: int,
+    variants: List[Any],
+    current_admin: TokenData = Depends(get_current_admin)
+):
+    """
+    Add variants to an existing item.
+    Frontend sends attr_name (not attr_id) — backend resolves the real attr_id.
+
+    Example body:
+    [
+      { "values": [{ "attr_name": "size", "value": "S" }, { "attr_name": "color", "value": "Red" }] },
+      { "values": [{ "attr_name": "size", "value": "M" }, { "attr_name": "color", "value": "Blue" }] }
+    ]
+    """
+    return await inventory_service.add_variants_to_item(item_id, variants)
 
 
 @router.put("/items/{item_id}")
@@ -95,27 +91,7 @@ async def create_transaction(
     transaction: TransactionCreate,
     current_admin: TokenData = Depends(get_current_admin)
 ):
-    """
-    Stock IN or OUT.
-
-    Example — Item with no variants (Helmet):
-    {
-      "item_id": 1,
-      "variant_id": null,
-      "type": "IN",
-      "quantity": 20,
-      "notes": "New delivery"
-    }
-
-    Example — Item with variant (Longsleeves S/Red):
-    {
-      "item_id": 2,
-      "variant_id": 1,
-      "type": "OUT",
-      "quantity": 3,
-      "notes": "Issued to employee"
-    }
-    """
+    """Stock IN or OUT"""
     return await inventory_service.create_transaction(transaction, current_admin.user_id)
 
 
@@ -127,15 +103,7 @@ async def get_transactions(
     item_id: Optional[int] = Query(None, description="Filter by item"),
     current_admin: TokenData = Depends(get_current_admin)
 ):
-    """
-    Get transactions with optional filters.
-
-    Examples:
-    - /inventory/transactions                              → All transactions
-    - /inventory/transactions?date=2026-02-15             → Single day
-    - /inventory/transactions?date_from=2026-02-01&date_to=2026-02-28  → Date range
-    - /inventory/transactions?item_id=1                   → Per item
-    """
+    """Get transactions with optional filters"""
     return await inventory_service.get_transactions(
         date=date,
         date_from=date_from,
