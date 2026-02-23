@@ -8,6 +8,7 @@ from app.api import auth, users, employees, system_logs, payrolls, archives
 from app.core.config import settings
 from app.api import auth, users, employees, system_logs, payrolls, archives, inventory
 from app.core.limiter import limiter
+from app.api import accounting
 import re
 
 app = FastAPI(
@@ -71,6 +72,7 @@ app.include_router(system_logs.router)
 app.include_router(payrolls.router)
 app.include_router(inventory.router)
 app.include_router(archives.router)
+app.include_router(accounting.router)
 
 
 @app.get("/")
