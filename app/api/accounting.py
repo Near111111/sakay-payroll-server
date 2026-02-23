@@ -35,7 +35,7 @@ async def create_record(
     title: str = Form(...),
     type: str = Form(...),
     notes: Optional[str] = Form(None),
-    files: Optional[List[UploadFile]] = File(None),
+    files: List[UploadFile] = File(default=[]),
     current_admin: TokenData = Depends(get_current_admin)
 ):
     """
