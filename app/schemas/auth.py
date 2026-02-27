@@ -21,7 +21,7 @@ class UserRegister(BaseModel):
     
     @field_validator('user_role')
     def validate_user_role(cls, v):
-        valid_roles = ["admin", "super_admin"]
+        valid_roles = ["admin", "super_admin", "accounting", "field"]
         if v not in valid_roles:
             raise ValueError(f'User role must be one of: {valid_roles}')
         return v
@@ -93,7 +93,7 @@ class OTPVerifyRegister(BaseModel):
 
     @field_validator('user_role')
     def validate_user_role(cls, v):
-        valid_roles = ["admin", "super_admin"]
+        valid_roles = ["admin", "super_admin", "accounting", "field"]
         if v not in valid_roles:
             raise ValueError(f'User role must be one of: {valid_roles}')
         return v

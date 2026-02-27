@@ -19,7 +19,7 @@ async def get_current_admin(credentials: HTTPAuthorizationCredentials = Depends(
         )
 
     user_role = payload.get("user_role")
-    if user_role not in ("admin", "super_admin"):
+    if user_role not in ("admin", "super_admin", "accounting", "field"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required"

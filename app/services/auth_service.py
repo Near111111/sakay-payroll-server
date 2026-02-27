@@ -89,7 +89,7 @@ class AuthService:
     # ─────────────────────────────────────────────
     async def register_user(self, user_data: UserRegister):
         try:
-            valid_roles = ["admin", "super_admin"]
+            valid_roles = ["admin", "super_admin", "accounting", "field"]
             if user_data.user_role not in valid_roles:
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"User role must be one of: {valid_roles}")
@@ -122,7 +122,7 @@ class AuthService:
 
             user_record = user.data[0]
 
-            if user_record['user_role'] not in ("admin", "super_admin"):
+            if user_record['user_role'] not in ("admin", "super_admin", "accounting", "field"):
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
 
             if not verify_password(user_data.user_password, user_record['user_password']):
@@ -158,7 +158,7 @@ class AuthService:
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Invalid or expired refresh token", headers={"WWW-Authenticate": "Bearer"})
 
-            if payload.get("user_role") not in ("admin", "super_admin"):
+            if payload.get("user_role") not in ("admin", "super_admin", "accounting", "field"):
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
             new_token_data = {
@@ -201,7 +201,7 @@ class AuthService:
                 purpose="register"
             )
 
-            valid_roles = ["admin", "super_admin"]
+            valid_roles = ["admin", "super_admin", "accounting", "field"]
             if user_data.user_role not in valid_roles:
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"User role must be one of: {valid_roles}")
@@ -247,7 +247,7 @@ class AuthService:
 
             user_record = user.data[0]
 
-            if user_record['user_role'] not in ("admin", "super_admin"):
+            if user_record['user_role'] not in ("admin", "super_admin", "accounting", "field"):
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied. Admin access required.")
 
             if not verify_password(user_password, user_record['user_password']):
