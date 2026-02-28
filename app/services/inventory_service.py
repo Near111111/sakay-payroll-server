@@ -203,6 +203,34 @@ class InventoryService:
         except Exception as e:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
+    async def delete_variant(self, item_id: int, variant_id: int):
+        """Delete a variant and all its related data"""
+        try:
+            # Validate item exists
+            item = self.supabase.table('inventory_items').select('item_id').eq('item_id', item_id).execute()
+            if not item.data:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Item {item_id} not found")
+
+            # Validate variant exists and belongs to this item
+            variant = self.supabase.table('inventory_variants').select('*').eq('variant_id', variant_id).eq('item_id', item_id).execute()
+            if not variant.data:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Variant {variant_id} not found for item {item_id}")
+
+            # Delete variant values
+            self.supabase.table('inventory_variant_values').delete().eq('variant_id', variant_id).execute()
+
+            # Delete transactions for this variant
+            self.supabase.table('inventory_transactions').delete().eq('variant_id', variant_id).execute()
+
+            # Delete the variant itself
+            self.supabase.table('inventory_variants').delete().eq('variant_id', variant_id).execute()
+
+            return {"message": f"Variant {variant_id} deleted successfully"}
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
     # ─────────────────────────────────────────────
     # STOCK IN / OUT
     # ─────────────────────────────────────────────
