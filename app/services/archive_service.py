@@ -12,13 +12,13 @@ class ArchiveService:
         """
         Archive all current payrolls:
         1. Look up current period approval status
-        2. Create archive_report entry with approval status
+        2. Create archive_report entry WITH carried-over approval
         3. Copy all payrolls with employee data to archive_payrolls
         4. Delete all payrolls from payrolls table
-        5. Clean up the payroll_approvals record
+        5. Clean up the payroll_approvals record (reset for next period)
         """
         try:
-            # STEP 1: Get all payrolls first to find the period
+            # STEP 1: Get all payrolls with employee data
             payrolls = self.supabase.table('payrolls').select(
                 '*, employees(employee_name_fn, employee_name_mi, employee_name_ln, '
                 'employee_suffix, employee_position, sss_deduction, phic_deduction, '
@@ -31,32 +31,31 @@ class ArchiveService:
                     detail="No payrolls to archive"
                 )
 
-            # Try to find approval status for the period
-            approval_data = {
-                "approved_by_accounting": False,
-                "approved_by_ceo": False,
-                "accounting_approved_at": None,
-                "ceo_approved_at": None,
-            }
+            # Get period dates and look up approval status
             first_payroll = payrolls.data[0]
             p_start = first_payroll.get('period_start_date')
             p_end = first_payroll.get('period_end_date')
-            if p_start and p_end:
-                approval_result = self.supabase.table('payroll_approvals').select('*').eq(
-                    'period_start_date', p_start
-                ).eq(
-                    'period_end_date', p_end
-                ).execute()
-                if approval_result.data and len(approval_result.data) > 0:
-                    ap = approval_result.data[0]
-                    approval_data = {
-                        "approved_by_accounting": ap.get('approved_by_accounting', False),
-                        "approved_by_ceo": ap.get('approved_by_ceo', False),
-                        "accounting_approved_at": ap.get('accounting_approved_at'),
-                        "ceo_approved_at": ap.get('ceo_approved_at'),
-                    }
 
-            # STEP 2: Create archive report WITH approval status
+            approval_data = {}
+            if p_start and p_end:
+                try:
+                    approval_result = self.supabase.table('payroll_approvals').select('*').eq(
+                        'period_start_date', p_start
+                    ).eq(
+                        'period_end_date', p_end
+                    ).execute()
+                    if approval_result.data and len(approval_result.data) > 0:
+                        ap = approval_result.data[0]
+                        approval_data = {
+                            "approved_by_accounting": ap.get('approved_by_accounting', False),
+                            "approved_by_ceo": ap.get('approved_by_ceo', False),
+                            "accounting_approved_at": ap.get('accounting_approved_at'),
+                            "ceo_approved_at": ap.get('ceo_approved_at'),
+                        }
+                except Exception:
+                    pass  # Non-critical, archive proceeds without approval
+
+            # STEP 2: Create archive report with carried-over approval
             archive_report = {
                 "archive_report_date": archive_date,
                 "created_at": datetime.now().isoformat(),
