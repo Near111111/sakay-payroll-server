@@ -11,28 +11,14 @@ class ArchiveService:
     async def create_archive(self, archive_date: str, user_id: int, username: str):
         """
         Archive all current payrolls:
-        1. Create archive_report entry
-        2. Copy all payrolls with employee data to archive_payrolls
-        3. Delete all payrolls from payrolls table
+        1. Look up current period approval status
+        2. Create archive_report entry with approval status
+        3. Copy all payrolls with employee data to archive_payrolls
+        4. Delete all payrolls from payrolls table
+        5. Clean up the payroll_approvals record
         """
         try:
-            # STEP 1: Create archive report (WITHOUT created_by)
-            archive_report = {
-                "archive_report_date": archive_date,
-                "created_at": datetime.now().isoformat()
-            }
-
-            archive_result = self.supabase.table('archive_reports').insert(archive_report).execute()
-
-            if not archive_result.data:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Failed to create archive report"
-                )
-
-            archive_report_id = archive_result.data[0]['archive_report_id']
-
-            # STEP 2: Get all payrolls with employee data
+            # STEP 1: Get all payrolls first to find the period
             payrolls = self.supabase.table('payrolls').select(
                 '*, employees(employee_name_fn, employee_name_mi, employee_name_ln, '
                 'employee_suffix, employee_position, sss_deduction, phic_deduction, '
@@ -44,6 +30,48 @@ class ArchiveService:
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="No payrolls to archive"
                 )
+
+            # Try to find approval status for the period
+            approval_data = {
+                "approved_by_accounting": False,
+                "approved_by_ceo": False,
+                "accounting_approved_at": None,
+                "ceo_approved_at": None,
+            }
+            first_payroll = payrolls.data[0]
+            p_start = first_payroll.get('period_start_date')
+            p_end = first_payroll.get('period_end_date')
+            if p_start and p_end:
+                approval_result = self.supabase.table('payroll_approvals').select('*').eq(
+                    'period_start_date', p_start
+                ).eq(
+                    'period_end_date', p_end
+                ).execute()
+                if approval_result.data and len(approval_result.data) > 0:
+                    ap = approval_result.data[0]
+                    approval_data = {
+                        "approved_by_accounting": ap.get('approved_by_accounting', False),
+                        "approved_by_ceo": ap.get('approved_by_ceo', False),
+                        "accounting_approved_at": ap.get('accounting_approved_at'),
+                        "ceo_approved_at": ap.get('ceo_approved_at'),
+                    }
+
+            # STEP 2: Create archive report WITH approval status
+            archive_report = {
+                "archive_report_date": archive_date,
+                "created_at": datetime.now().isoformat(),
+                **approval_data
+            }
+
+            archive_result = self.supabase.table('archive_reports').insert(archive_report).execute()
+
+            if not archive_result.data:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to create archive report"
+                )
+
+            archive_report_id = archive_result.data[0]['archive_report_id']
 
             # STEP 3: Prepare archive payroll entries
             archive_payrolls = []
@@ -98,6 +126,17 @@ class ArchiveService:
 
             # STEP 5: Delete all payrolls
             self.supabase.table('payrolls').delete().neq('payroll_id', 0).execute()  # Delete all
+
+            # STEP 6: Clean up the payroll_approvals record for this period
+            if p_start and p_end:
+                try:
+                    self.supabase.table('payroll_approvals').delete().eq(
+                        'period_start_date', p_start
+                    ).eq(
+                        'period_end_date', p_end
+                    ).execute()
+                except Exception:
+                    pass  # Non-critical, don't fail the archive
 
             return {
                 "message": "Payrolls archived successfully",
