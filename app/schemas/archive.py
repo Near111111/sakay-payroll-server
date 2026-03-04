@@ -5,11 +5,18 @@ from datetime import datetime, date
 class ArchiveReportCreate(BaseModel):
     archive_report_date: str
 
+class ArchiveApprovalRequest(BaseModel):
+    approver_role: str  # "accounting" or "ceo"
+
 class ArchiveReportResponse(BaseModel):
     archive_report_id: int
     archive_report_date: str
     created_at: datetime
     total_payrolls_archived: Optional[int] = 0
+    approved_by_accounting: Optional[bool] = False
+    approved_by_ceo: Optional[bool] = False
+    accounting_approved_at: Optional[datetime] = None
+    ceo_approved_at: Optional[datetime] = None
 
 class ArchivePayrollResponse(BaseModel):
     archive_payroll_id: int
