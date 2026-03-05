@@ -1,4 +1,4 @@
-from app.core.supabase_client import get_supabase
+from app.core.db_client import db_fetch_all, db_fetch_one, db_execute
 from app.schemas.employee import EmployeeCreate, EmployeeUpdate
 from app.schemas.system_log import SystemLogCreate
 from app.services.system_log_service import SystemLogService
@@ -7,38 +7,27 @@ from fastapi import HTTPException, status
 
 class EmployeeService:
     def __init__(self):
-        self.supabase = get_supabase()
         self.log_service = SystemLogService()
-    
+
     async def get_all_employees(self, search: str = None, status: str = None):
-        """
-        Get all employees from database with optional filters
-        
-        Args:
-            search: Search term for employee names (first, middle, last)
-            status: Filter by employment status (Regular, Probationary, Contractual, Project-based)
-        
-        Returns:
-            Dictionary with employees list, total count, and filter info
-        """
         try:
-            query = self.supabase.table('employees').select('*')
-            
-            # Filter by status if provided
+            conditions = ["1=1"]
+            params = {}
+
             if status:
-                query = query.eq('employee_status', status)
-            
-            # Search by name if provided
+                conditions.append("employee_status = :status")
+                params["status"] = status
+
             if search:
-                search_term = search.strip().upper()
-                query = query.or_(
-                    f"employee_name_fn.ilike.%{search_term}%,"
-                    f"employee_name_mi.ilike.%{search_term}%,"
-                    f"employee_name_ln.ilike.%{search_term}%"
+                search_term = f"%{search.strip().upper()}%"
+                conditions.append(
+                    "(UPPER(employee_name_fn) LIKE :search OR UPPER(employee_name_mi) LIKE :search OR UPPER(employee_name_ln) LIKE :search)"
                 )
-            
-            result = query.execute()
-            
+                params["search"] = search_term
+
+            where = " AND ".join(conditions)
+            result = db_fetch_all(f"SELECT * FROM employees WHERE {where}", params)
+
             return {
                 "employees": result.data,
                 "total": len(result.data),
@@ -50,29 +39,18 @@ class EmployeeService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to fetch employees: {str(e)}"
             )
-    
+
     async def get_employee_by_id(self, employee_id: int):
-        """
-        Get single employee by ID
-        
-        Args:
-            employee_id: The employee ID to fetch
-        
-        Returns:
-            Employee data dictionary
-        
-        Raises:
-            404: Employee not found
-        """
         try:
-            result = self.supabase.table('employees').select('*').eq('employee_id', employee_id).execute()
-            
+            result = db_fetch_one(
+                "SELECT * FROM employees WHERE employee_id = :employee_id",
+                {"employee_id": employee_id}
+            )
             if not result.data:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"Employee with ID {employee_id} not found"
                 )
-            
             return result.data[0]
         except HTTPException:
             raise
@@ -81,59 +59,49 @@ class EmployeeService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to fetch employee: {str(e)}"
             )
-    
+
     async def create_employee(self, employee_data: EmployeeCreate, created_by_user_id: int):
-        """
-        Create new employee and log the ADD action
-        
-        Args:
-            employee_data: Employee information from request
-            created_by_user_id: User ID of the admin creating the employee
-        
-        Returns:
-            Created employee data
-        
-        Features:
-            - Auto-generates next employee_id
-            - Validates required fields (first name, last name)
-            - Sets default status to "Regular" if not provided
-            - Creates system log with all name components
-        """
         try:
-            # Get next available employee_id
-            existing_employees = self.supabase.table('employees').select('employee_id').order('employee_id', desc=True).limit(1).execute()
-            
+            existing = db_fetch_one(
+                "SELECT employee_id FROM employees ORDER BY employee_id DESC LIMIT 1"
+            )
             next_id = 1
-            if existing_employees.data:
-                next_id = existing_employees.data[0]['employee_id'] + 1
-            
-            new_employee = {
-                "employee_id": next_id,
-                "employee_name_fn": employee_data.employee_name_fn,
-                "employee_name_mi": employee_data.employee_name_mi,
-                "employee_name_ln": employee_data.employee_name_ln,
-                "employee_suffix": employee_data.employee_suffix,
-                "employee_position": employee_data.employee_position,
-                "employee_status": employee_data.employee_status or "Regular",
-                "basic_pay": employee_data.basic_pay,
-                # ✅ REMOVED: salary_rate and salary
-                "sss_deduction": employee_data.sss_deduction,
-                "phic_deduction": employee_data.phic_deduction,
-                "pagibig_deduction": employee_data.pagibig_deduction,
-                "created_by": created_by_user_id
-            }
-            
-            result = self.supabase.table('employees').insert(new_employee).execute()
-            
+            if existing.data:
+                next_id = existing.data[0]['employee_id'] + 1
+
+            result = db_execute(
+                """
+                INSERT INTO employees (
+                    employee_id, employee_name_fn, employee_name_mi, employee_name_ln,
+                    employee_suffix, employee_position, employee_status,
+                    basic_pay, sss_deduction, phic_deduction, pagibig_deduction, created_by
+                ) VALUES (
+                    :employee_id, :employee_name_fn, :employee_name_mi, :employee_name_ln,
+                    :employee_suffix, :employee_position, :employee_status,
+                    :basic_pay, :sss_deduction, :phic_deduction, :pagibig_deduction, :created_by
+                ) RETURNING *
+                """,
+                {
+                    "employee_id": next_id,
+                    "employee_name_fn": employee_data.employee_name_fn,
+                    "employee_name_mi": employee_data.employee_name_mi,
+                    "employee_name_ln": employee_data.employee_name_ln,
+                    "employee_suffix": employee_data.employee_suffix,
+                    "employee_position": employee_data.employee_position,
+                    "employee_status": employee_data.employee_status or "Regular",
+                    "basic_pay": employee_data.basic_pay,
+                    "sss_deduction": employee_data.sss_deduction,
+                    "phic_deduction": employee_data.phic_deduction,
+                    "pagibig_deduction": employee_data.pagibig_deduction,
+                    "created_by": created_by_user_id
+                }
+            )
+
             if not result.data:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Failed to create employee"
-                )
-            
+                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create employee")
+
             created_employee = result.data[0]
-            
-            # Create system log with all name components
+
             await self.log_service.create_log(SystemLogCreate(
                 user_id=created_by_user_id,
                 activity_type="ADD",
@@ -143,52 +111,35 @@ class EmployeeService:
                 employee_name_ln=created_employee['employee_name_ln'],
                 employee_suffix=created_employee['employee_suffix']
             ))
-            
+
             return created_employee
         except HTTPException:
             raise
         except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to create employee: {str(e)}"
-            )
-    
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to create employee: {str(e)}")
+
     async def update_employee(self, employee_id: int, employee_data: dict, updated_by_user_id: int):
-        """
-        Update employee and log the EDIT action
-        
-        Args:
-            employee_id: The employee ID to update
-            employee_data: Dictionary with fields to update (only provided fields)
-            updated_by_user_id: User ID of the admin updating the employee
-        
-        Returns:
-            Updated employee data
-        
-        Features:
-            - Validates employee exists before updating
-            - Supports partial updates (only provided fields)
-            - Creates system log with current name components
-        
-        Raises:
-            404: Employee not found
-        """
         try:
-            # Check if employee exists
-            existing = self.supabase.table('employees').select('*').eq('employee_id', employee_id).execute()
-            
+            existing = db_fetch_one(
+                "SELECT * FROM employees WHERE employee_id = :employee_id",
+                {"employee_id": employee_id}
+            )
             if not existing.data:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Employee with ID {employee_id} not found"
-                )
-            
-            # Update employee
-            result = self.supabase.table('employees').update(employee_data).eq('employee_id', employee_id).execute()
-            
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Employee with ID {employee_id} not found")
+
+            if not employee_data:
+                return existing.data[0]
+
+            set_clauses = ", ".join([f"{k} = :{k}" for k in employee_data.keys()])
+            params = {**employee_data, "employee_id": employee_id}
+
+            result = db_execute(
+                f"UPDATE employees SET {set_clauses} WHERE employee_id = :employee_id RETURNING *",
+                params
+            )
+
             updated_emp = result.data[0]
-            
-            # Create system log with all name components
+
             await self.log_service.create_log(SystemLogCreate(
                 user_id=updated_by_user_id,
                 activity_type="EDIT",
@@ -198,54 +149,24 @@ class EmployeeService:
                 employee_name_ln=updated_emp['employee_name_ln'],
                 employee_suffix=updated_emp['employee_suffix']
             ))
-            
-            return result.data[0]
+
+            return updated_emp
         except HTTPException:
             raise
         except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to update employee: {str(e)}"
-            )
-    
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to update employee: {str(e)}")
+
     async def delete_employee(self, employee_id: int, deleted_by_user_id: int):
-        """
-        Delete employee and log the DELETE action
-        
-        Args:
-            employee_id: The employee ID to delete
-            deleted_by_user_id: User ID of the admin deleting the employee
-        
-        Returns:
-            Success message with deleted employee info
-        
-        Features:
-            - Validates employee exists before deleting
-            - CASCADE DELETE automatically removes all payroll records
-            - Creates system log with all name components BEFORE deletion
-            - Logs remain intact with employee info after deletion
-        
-        Database CASCADE behavior:
-            - Deletes all payroll records for this employee (payrolls table)
-            - Keeps system logs intact (no foreign key relationship)
-        
-        Raises:
-            404: Employee not found
-        """
         try:
-            # Check if employee exists
-            existing = self.supabase.table('employees').select('*').eq('employee_id', employee_id).execute()
-            
+            existing = db_fetch_one(
+                "SELECT * FROM employees WHERE employee_id = :employee_id",
+                {"employee_id": employee_id}
+            )
             if not existing.data:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Employee with ID {employee_id} not found"
-                )
-            
-            # Get employee info BEFORE deleting
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Employee with ID {employee_id} not found")
+
             emp = existing.data[0]
-            
-            # Build full name with suffix for display
+
             full_name_parts = [
                 emp['employee_name_fn'],
                 emp['employee_name_mi'] if emp['employee_name_mi'] else '',
@@ -253,13 +174,14 @@ class EmployeeService:
             ]
             if emp.get('employee_suffix'):
                 full_name_parts.append(emp['employee_suffix'])
-            
+
             full_name = ' '.join(filter(None, full_name_parts)).strip()
-            
-            # Delete employee (CASCADE will auto-delete payroll records)
-            self.supabase.table('employees').delete().eq('employee_id', employee_id).execute()
-            
-            # Create system log with all name components
+
+            db_execute(
+                "DELETE FROM employees WHERE employee_id = :employee_id",
+                {"employee_id": employee_id}
+            )
+
             await self.log_service.create_log(SystemLogCreate(
                 user_id=deleted_by_user_id,
                 activity_type="DELETE",
@@ -269,7 +191,7 @@ class EmployeeService:
                 employee_name_ln=emp['employee_name_ln'],
                 employee_suffix=emp['employee_suffix']
             ))
-            
+
             return {
                 "message": f"Employee {employee_id} ({full_name}) deleted successfully (including all payroll records)",
                 "employee_id": employee_id,
@@ -279,7 +201,4 @@ class EmployeeService:
         except HTTPException:
             raise
         except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to delete employee: {str(e)}"
-            )
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to delete employee: {str(e)}")

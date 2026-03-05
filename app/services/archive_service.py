@@ -1,4 +1,4 @@
-from app.core.supabase_client import get_supabase
+from app.core.db_client import db_fetch_all, db_fetch_one, db_execute
 from app.schemas.archive import ArchiveReportCreate
 from fastapi import HTTPException, status
 from datetime import datetime
@@ -6,32 +6,25 @@ from datetime import datetime
 
 class ArchiveService:
     def __init__(self):
-        self.supabase = get_supabase()
+        pass
 
     async def create_archive(self, archive_date: str, user_id: int, username: str):
-        """
-        Archive all current payrolls:
-        1. Look up current period approval status
-        2. Create archive_report entry WITH carried-over approval
-        3. Copy all payrolls with employee data to archive_payrolls
-        4. Delete all payrolls from payrolls table
-        5. Clean up the payroll_approvals record (reset for next period)
-        """
         try:
-            # STEP 1: Get all payrolls with employee data
-            payrolls = self.supabase.table('payrolls').select(
-                '*, employees(employee_name_fn, employee_name_mi, employee_name_ln, '
-                'employee_suffix, employee_position, sss_deduction, phic_deduction, '
-                'pagibig_deduction, basic_pay)'
-            ).execute()
+            # STEP 1: Get all payrolls with employee data via JOIN
+            payrolls = db_fetch_all(
+                """
+                SELECT p.*,
+                    e.employee_name_fn, e.employee_name_mi, e.employee_name_ln,
+                    e.employee_suffix, e.employee_position,
+                    e.sss_deduction, e.phic_deduction, e.pagibig_deduction, e.basic_pay
+                FROM payrolls p
+                JOIN employees e ON e.employee_id = p.employee_id
+                """
+            )
 
-            if not payrolls.data or len(payrolls.data) == 0:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="No payrolls to archive"
-                )
+            if not payrolls.data:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No payrolls to archive")
 
-            # Get period dates and look up approval status
             first_payroll = payrolls.data[0]
             p_start = first_payroll.get('period_start_date')
             p_end = first_payroll.get('period_end_date')
@@ -39,12 +32,14 @@ class ArchiveService:
             approval_data = {}
             if p_start and p_end:
                 try:
-                    approval_result = self.supabase.table('payroll_approvals').select('*').eq(
-                        'period_start_date', p_start
-                    ).eq(
-                        'period_end_date', p_end
-                    ).execute()
-                    if approval_result.data and len(approval_result.data) > 0:
+                    approval_result = db_fetch_one(
+                        """
+                        SELECT * FROM payroll_approvals
+                        WHERE period_start_date = :p_start AND period_end_date = :p_end
+                        """,
+                        {"p_start": p_start, "p_end": p_end}
+                    )
+                    if approval_result.data:
                         ap = approval_result.data[0]
                         approval_data = {
                             "approved_by_accounting": ap.get('approved_by_accounting', False),
@@ -53,31 +48,40 @@ class ArchiveService:
                             "ceo_approved_at": ap.get('ceo_approved_at'),
                         }
                 except Exception:
-                    pass  # Non-critical, archive proceeds without approval
+                    pass
 
-            # STEP 2: Create archive report with carried-over approval
-            archive_report = {
-                "archive_report_date": archive_date,
-                "created_at": datetime.now().isoformat(),
-                **approval_data
-            }
-
-            archive_result = self.supabase.table('archive_reports').insert(archive_report).execute()
+            # STEP 2: Create archive report
+            archive_result = db_execute(
+                """
+                INSERT INTO archive_reports (
+                    archive_report_date, created_at,
+                    approved_by_accounting, approved_by_ceo,
+                    accounting_approved_at, ceo_approved_at
+                ) VALUES (
+                    :archive_report_date, :created_at,
+                    :approved_by_accounting, :approved_by_ceo,
+                    :accounting_approved_at, :ceo_approved_at
+                ) RETURNING *
+                """,
+                {
+                    "archive_report_date": archive_date,
+                    "created_at": datetime.now().isoformat(),
+                    "approved_by_accounting": approval_data.get("approved_by_accounting", False),
+                    "approved_by_ceo": approval_data.get("approved_by_ceo", False),
+                    "accounting_approved_at": approval_data.get("accounting_approved_at"),
+                    "ceo_approved_at": approval_data.get("ceo_approved_at"),
+                }
+            )
 
             if not archive_result.data:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Failed to create archive report"
-                )
+                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create archive report")
 
             archive_report_id = archive_result.data[0]['archive_report_id']
 
-            # STEP 3: Prepare archive payroll entries
+            # STEP 3: Prepare and insert archive payrolls
             archive_payrolls = []
             for payroll in payrolls.data:
-                emp = payroll.get('employees', {})
-
-                archive_payroll = {
+                archive_payrolls.append({
                     "archive_report_id": archive_report_id,
                     "employee_id": payroll.get('employee_id'),
                     "days_worked": payroll.get('days_worked'),
@@ -99,43 +103,41 @@ class ArchiveService:
                     "pay_status": payroll.get('pay_status'),
                     "made_by": username,
                     "created_at": payroll.get('created_at'),
-                    "employee_name_ln": emp.get('employee_name_ln'),
-                    "employee_name_fn": emp.get('employee_name_fn'),
-                    "employee_name_mi": emp.get('employee_name_mi'),
-                    "employee_suffix": emp.get('employee_suffix'),
-                    "employee_position": emp.get('employee_position'),
-                    "sss_deduction": emp.get('sss_deduction'),
-                    "phic_deduction": emp.get('phic_deduction'),
-                    "pagibig_deduction": emp.get('pagibig_deduction'),
-                    "basic_pay": emp.get('basic_pay')
-                }
+                    "employee_name_ln": payroll.get('employee_name_ln'),
+                    "employee_name_fn": payroll.get('employee_name_fn'),
+                    "employee_name_mi": payroll.get('employee_name_mi'),
+                    "employee_suffix": payroll.get('employee_suffix'),
+                    "employee_position": payroll.get('employee_position'),
+                    "sss_deduction": payroll.get('sss_deduction'),
+                    "phic_deduction": payroll.get('phic_deduction'),
+                    "pagibig_deduction": payroll.get('pagibig_deduction'),
+                    "basic_pay": payroll.get('basic_pay'),
+                })
 
-                archive_payrolls.append(archive_payroll)
+            # Insert one by one (SQLAlchemy text() doesn't support bulk insert easily)
+            for ap in archive_payrolls:
+                cols = ", ".join(ap.keys())
+                vals = ", ".join([f":{k}" for k in ap.keys()])
+                result = db_execute(f"INSERT INTO archive_payrolls ({cols}) VALUES ({vals}) RETURNING *", ap)
+                if not result.data:
+                    db_execute(
+                        "DELETE FROM archive_reports WHERE archive_report_id = :id",
+                        {"id": archive_report_id}
+                    )
+                    raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to archive payrolls")
 
-            # STEP 4: Insert archived payrolls
-            insert_result = self.supabase.table('archive_payrolls').insert(archive_payrolls).execute()
+            # STEP 4: Delete all current payrolls
+            db_execute("DELETE FROM payrolls WHERE payroll_id > 0")
 
-            if not insert_result.data:
-                # Rollback: delete the archive report
-                self.supabase.table('archive_reports').delete().eq('archive_report_id', archive_report_id).execute()
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Failed to archive payrolls"
-                )
-
-            # STEP 5: Delete all payrolls
-            self.supabase.table('payrolls').delete().neq('payroll_id', 0).execute()  # Delete all
-
-            # STEP 6: Clean up the payroll_approvals record for this period
+            # STEP 5: Clean up payroll_approvals for this period
             if p_start and p_end:
                 try:
-                    self.supabase.table('payroll_approvals').delete().eq(
-                        'period_start_date', p_start
-                    ).eq(
-                        'period_end_date', p_end
-                    ).execute()
+                    db_execute(
+                        "DELETE FROM payroll_approvals WHERE period_start_date = :p_start AND period_end_date = :p_end",
+                        {"p_start": p_start, "p_end": p_end}
+                    )
                 except Exception:
-                    pass  # Non-critical, don't fail the archive
+                    pass
 
             return {
                 "message": "Payrolls archived successfully",
@@ -144,59 +146,43 @@ class ArchiveService:
                 "payrolls_archived": len(archive_payrolls),
                 "archived_by": username
             }
-
         except HTTPException:
             raise
         except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to archive payrolls: {str(e)}"
-            )
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to archive payrolls: {str(e)}")
 
     async def approve_archive(self, archive_report_id: int, approver_role: str, username: str):
-        """Approve an archive report by accounting or CEO"""
         try:
-            # Check if archive exists
-            archive = self.supabase.table('archive_reports').select('*').eq('archive_report_id',
-                                                                            archive_report_id).execute()
+            archive = db_fetch_one(
+                "SELECT * FROM archive_reports WHERE archive_report_id = :id",
+                {"id": archive_report_id}
+            )
 
             if not archive.data:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Archive report {archive_report_id} not found"
-                )
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Archive report {archive_report_id} not found")
 
             current = archive.data[0]
-            update_data = {}
+            now = datetime.now().isoformat()
 
             if approver_role == "accounting":
                 if current.get('approved_by_accounting'):
                     return {"message": "Already approved by accounting", "already_approved": True}
-                update_data = {
-                    "approved_by_accounting": True,
-                    "accounting_approved_at": datetime.now().isoformat()
-                }
+                result = db_execute(
+                    "UPDATE archive_reports SET approved_by_accounting = TRUE, accounting_approved_at = :now WHERE archive_report_id = :id RETURNING *",
+                    {"now": now, "id": archive_report_id}
+                )
             elif approver_role == "ceo":
                 if current.get('approved_by_ceo'):
                     return {"message": "Already approved by CEO", "already_approved": True}
-                update_data = {
-                    "approved_by_ceo": True,
-                    "ceo_approved_at": datetime.now().isoformat()
-                }
-            else:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="approver_role must be 'accounting' or 'ceo'"
+                result = db_execute(
+                    "UPDATE archive_reports SET approved_by_ceo = TRUE, ceo_approved_at = :now WHERE archive_report_id = :id RETURNING *",
+                    {"now": now, "id": archive_report_id}
                 )
-
-            result = self.supabase.table('archive_reports').update(update_data).eq('archive_report_id',
-                                                                                   archive_report_id).execute()
+            else:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="approver_role must be 'accounting' or 'ceo'")
 
             if not result.data:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Failed to update approval status"
-                )
+                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to update approval status")
 
             return {
                 "message": f"Archive approved by {approver_role}",
@@ -204,55 +190,41 @@ class ArchiveService:
                 "approver_role": approver_role,
                 "approved_by": username
             }
-
         except HTTPException:
             raise
         except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to approve archive: {str(e)}"
-            )
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to approve archive: {str(e)}")
 
     async def get_all_archives(self):
-        """Get all archive reports with count of payrolls"""
         try:
-            archives = self.supabase.table('archive_reports').select('*').order('created_at', desc=True).execute()
+            archives = db_fetch_all("SELECT * FROM archive_reports ORDER BY created_at DESC")
 
             result = []
             for archive in archives.data:
-                # Count payrolls in this archive
-                count = self.supabase.table('archive_payrolls').select('archive_payroll_id', count='exact').eq(
-                    'archive_report_id', archive['archive_report_id']).execute()
-
-                archive['total_payrolls_archived'] = count.count if count.count else 0
+                count = db_fetch_one(
+                    "SELECT COUNT(*) as count FROM archive_payrolls WHERE archive_report_id = :id",
+                    {"id": archive['archive_report_id']}
+                )
+                archive['total_payrolls_archived'] = count.data[0]['count'] if count.data else 0
                 result.append(archive)
 
-            return {
-                "archives": result,
-                "total": len(result)
-            }
+            return {"archives": result, "total": len(result)}
         except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to get archives: {str(e)}"
-            )
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to get archives: {str(e)}")
 
     async def get_archive_by_id(self, archive_report_id: int):
-        """Get specific archive with all payrolls"""
         try:
-            # Get archive report
-            archive = self.supabase.table('archive_reports').select('*').eq('archive_report_id',
-                                                                            archive_report_id).execute()
-
+            archive = db_fetch_one(
+                "SELECT * FROM archive_reports WHERE archive_report_id = :id",
+                {"id": archive_report_id}
+            )
             if not archive.data:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Archive report {archive_report_id} not found"
-                )
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Archive report {archive_report_id} not found")
 
-            # Get all payrolls in this archive
-            payrolls = self.supabase.table('archive_payrolls').select('*').eq('archive_report_id',
-                                                                              archive_report_id).execute()
+            payrolls = db_fetch_all(
+                "SELECT * FROM archive_payrolls WHERE archive_report_id = :id",
+                {"id": archive_report_id}
+            )
 
             return {
                 "archive_report": archive.data[0],
@@ -262,34 +234,24 @@ class ArchiveService:
         except HTTPException:
             raise
         except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to get archive: {str(e)}"
-            )
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to get archive: {str(e)}")
 
     async def delete_archive(self, archive_report_id: int):
-        """Delete an archive report and all its payrolls (CASCADE)"""
         try:
-            # Check if exists
-            archive = self.supabase.table('archive_reports').select('archive_report_id').eq('archive_report_id',
-                                                                                            archive_report_id).execute()
-
+            archive = db_fetch_one(
+                "SELECT archive_report_id FROM archive_reports WHERE archive_report_id = :id",
+                {"id": archive_report_id}
+            )
             if not archive.data:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Archive report {archive_report_id} not found"
-                )
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Archive report {archive_report_id} not found")
 
-            # Delete (will cascade to archive_payrolls)
-            self.supabase.table('archive_reports').delete().eq('archive_report_id', archive_report_id).execute()
+            db_execute(
+                "DELETE FROM archive_reports WHERE archive_report_id = :id",
+                {"id": archive_report_id}
+            )
 
-            return {
-                "message": f"Archive report {archive_report_id} deleted successfully"
-            }
+            return {"message": f"Archive report {archive_report_id} deleted successfully"}
         except HTTPException:
             raise
         except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to delete archive: {str(e)}"
-            )
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to delete archive: {str(e)}")

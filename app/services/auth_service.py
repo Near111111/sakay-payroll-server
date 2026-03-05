@@ -1,8 +1,8 @@
-from app.core.supabase_client import get_supabase
+from app.core.db_client import db_fetch_one, db_execute
 from app.core.security import (
-    hash_password, 
-    verify_password, 
-    create_access_token, 
+    hash_password,
+    verify_password,
+    create_access_token,
     create_refresh_token,
     verify_refresh_token,
     ACCESS_TOKEN_EXPIRE_MINUTES
@@ -20,23 +20,19 @@ COOLDOWN_MINUTES = 5
 
 class AuthService:
     def __init__(self):
-        self.supabase = get_supabase()
         self.otp_service = OTPService()
 
-    # ─────────────────────────────────────────────
-    # Brute Force Protection Helpers
-    # ─────────────────────────────────────────────
     def _get_attempts(self, username: str):
-        """Get current login attempt record for username"""
-        result = self.supabase.table('login_attempts').select('*').eq('username', username).execute()
+        result = db_fetch_one(
+            "SELECT * FROM login_attempts WHERE username = :username",
+            {"username": username}
+        )
         return result.data[0] if result.data else None
 
     def _check_cooldown(self, username: str):
-        """Raise 429 if user is still in cooldown period"""
         record = self._get_attempts(username)
         if not record:
             return
-
         if record.get('locked_until'):
             locked_until = datetime.fromisoformat(record['locked_until'].replace('Z', '+00:00'))
             now = datetime.now(UTC)
@@ -47,46 +43,49 @@ class AuthService:
                     detail=f"Too many failed attempts. Please try again in {remaining} minute(s)."
                 )
             else:
-                # Cooldown expired — reset
                 self._reset_attempts(username)
 
     def _record_failed_attempt(self, username: str):
-        """Increment failed attempts, lock if >= MAX_ATTEMPTS"""
         record = self._get_attempts(username)
-
         if not record:
-            # First failed attempt
-            self.supabase.table('login_attempts').insert({
-                "username": username,
-                "failed_attempts": 1,
-                "locked_until": None,
-                "last_attempt": datetime.now(UTC).isoformat()
-            }).execute()
+            db_execute(
+                """
+                INSERT INTO login_attempts (username, failed_attempts, locked_until, last_attempt)
+                VALUES (:username, 1, NULL, :last_attempt)
+                """,
+                {"username": username, "last_attempt": datetime.now(UTC).isoformat()}
+            )
             return
 
         new_count = record['failed_attempts'] + 1
         locked_until = None
-
         if new_count >= MAX_ATTEMPTS:
             locked_until = (datetime.now(UTC) + timedelta(minutes=COOLDOWN_MINUTES)).isoformat()
 
-        self.supabase.table('login_attempts').update({
-            "failed_attempts": new_count,
-            "locked_until": locked_until,
-            "last_attempt": datetime.now(UTC).isoformat()
-        }).eq('username', username).execute()
+        db_execute(
+            """
+            UPDATE login_attempts
+            SET failed_attempts = :count, locked_until = :locked_until, last_attempt = :last_attempt
+            WHERE username = :username
+            """,
+            {
+                "count": new_count,
+                "locked_until": locked_until,
+                "last_attempt": datetime.now(UTC).isoformat(),
+                "username": username
+            }
+        )
 
     def _reset_attempts(self, username: str):
-        """Reset failed attempts after successful login or cooldown expiry"""
-        self.supabase.table('login_attempts').update({
-            "failed_attempts": 0,
-            "locked_until": None,
-            "last_attempt": datetime.now(UTC).isoformat()
-        }).eq('username', username).execute()
+        db_execute(
+            """
+            UPDATE login_attempts
+            SET failed_attempts = 0, locked_until = NULL, last_attempt = :last_attempt
+            WHERE username = :username
+            """,
+            {"last_attempt": datetime.now(UTC).isoformat(), "username": username}
+        )
 
-    # ─────────────────────────────────────────────
-    # EXISTING: Original endpoints (backward compat)
-    # ─────────────────────────────────────────────
     async def register_user(self, user_data: UserRegister):
         try:
             valid_roles = ["admin", "super_admin", "accounting", "field"]
@@ -94,15 +93,25 @@ class AuthService:
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"User role must be one of: {valid_roles}")
 
-            existing_user = self.supabase.table('users').select('*').eq('username', user_data.username).execute()
+            existing_user = db_fetch_one(
+                "SELECT * FROM users WHERE username = :username",
+                {"username": user_data.username}
+            )
             if existing_user.data:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Username already exists")
 
-            result = self.supabase.table('users').insert({
-                "username": user_data.username,
-                "user_password": hash_password(user_data.user_password),
-                "user_role": user_data.user_role
-            }).execute()
+            result = db_execute(
+                """
+                INSERT INTO users (username, user_password, user_role)
+                VALUES (:username, :user_password, :user_role)
+                RETURNING *
+                """,
+                {
+                    "username": user_data.username,
+                    "user_password": hash_password(user_data.user_password),
+                    "user_role": user_data.user_role
+                }
+            )
 
             if not result.data:
                 raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create user")
@@ -115,7 +124,10 @@ class AuthService:
 
     async def login_user(self, user_data: UserLogin):
         try:
-            user = self.supabase.table('users').select('*').eq('username', user_data.username).execute()
+            user = db_fetch_one(
+                "SELECT * FROM users WHERE username = :username",
+                {"username": user_data.username}
+            )
             if not user.data:
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Invalid username or password", headers={"WWW-Authenticate": "Bearer"})
@@ -177,12 +189,12 @@ class AuthService:
         except Exception as e:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
-    # ─────────────────────────────────────────────
-    # OTP Register Flow
-    # ─────────────────────────────────────────────
     async def send_register_otp(self, phone_number: str):
         try:
-            existing = self.supabase.table('users').select('user_id').eq('phone_number', phone_number).execute()
+            existing = db_fetch_one(
+                "SELECT user_id FROM users WHERE phone_number = :phone_number",
+                {"phone_number": phone_number}
+            )
             if existing.data:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Phone number already registered")
 
@@ -206,16 +218,26 @@ class AuthService:
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"User role must be one of: {valid_roles}")
 
-            existing_user = self.supabase.table('users').select('*').eq('username', user_data.username).execute()
+            existing_user = db_fetch_one(
+                "SELECT * FROM users WHERE username = :username",
+                {"username": user_data.username}
+            )
             if existing_user.data:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Username already exists")
 
-            result = self.supabase.table('users').insert({
-                "username": user_data.username,
-                "user_password": hash_password(user_data.user_password),
-                "user_role": user_data.user_role,
-                "phone_number": user_data.phone_number
-            }).execute()
+            result = db_execute(
+                """
+                INSERT INTO users (username, user_password, user_role, phone_number)
+                VALUES (:username, :user_password, :user_role, :phone_number)
+                RETURNING *
+                """,
+                {
+                    "username": user_data.username,
+                    "user_password": hash_password(user_data.user_password),
+                    "user_role": user_data.user_role,
+                    "phone_number": user_data.phone_number
+                }
+            )
 
             if not result.data:
                 raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create user")
@@ -226,22 +248,15 @@ class AuthService:
         except Exception as e:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
-    # ─────────────────────────────────────────────
-    # OTP Login Flow (with Brute Force Protection)
-    # ─────────────────────────────────────────────
     async def send_login_otp(self, username: str, user_password: str):
-        """
-        Step 1 - Login: Validate credentials then send OTP
-        - 4 failed attempts = 5 minute cooldown
-        - Phone number kukunin from DB automatically
-        """
         try:
-            # Check cooldown FIRST before anything else
             self._check_cooldown(username)
 
-            user = self.supabase.table('users').select('*').eq('username', username).execute()
+            user = db_fetch_one(
+                "SELECT * FROM users WHERE username = :username",
+                {"username": username}
+            )
             if not user.data:
-                # Still record attempt even if user doesn't exist (para hindi malaman ng attacker)
                 self._record_failed_attempt(username)
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password")
 
@@ -252,7 +267,6 @@ class AuthService:
 
             if not verify_password(user_password, user_record['user_password']):
                 self._record_failed_attempt(username)
-                # Check kung naka-lock na ngayon after recording
                 self._check_cooldown(username)
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password")
 
@@ -261,9 +275,7 @@ class AuthService:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                     detail="No phone number registered. Please contact admin.")
 
-            # Success — reset failed attempts
             self._reset_attempts(username)
-
             await self.otp_service.send_otp(phone_number, purpose="login")
 
             masked = phone_number[:4] + "****" + phone_number[-3:]
@@ -274,15 +286,13 @@ class AuthService:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
     async def verify_login_otp(self, user_data: OTPVerifyLogin):
-        """
-        Step 2 - Login: Verify OTP then return tokens
-        - Also protected by brute force check
-        """
         try:
-            # Check cooldown
             self._check_cooldown(user_data.username)
 
-            user = self.supabase.table('users').select('*').eq('username', user_data.username).execute()
+            user = db_fetch_one(
+                "SELECT * FROM users WHERE username = :username",
+                {"username": user_data.username}
+            )
             if not user.data:
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password")
 
@@ -304,7 +314,6 @@ class AuthService:
                 purpose="login"
             )
 
-            # Success — reset attempts
             self._reset_attempts(user_data.username)
 
             token_data = {
