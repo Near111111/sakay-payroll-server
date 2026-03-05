@@ -19,6 +19,29 @@ ALLOWED_TYPES = {
     "image/webp": "image",
 }
 
+# MinIO max presigned URL expiry is 7 days (604800 seconds)
+PRESIGNED_EXPIRY = 60 * 60 * 24 * 7
+
+
+def _enrich_files_with_urls(files: list) -> list:
+    """Generate fresh presigned URLs for each file on every request."""
+    result = []
+    for f in files:
+        file_path = f.get("file_path") or f.get("file_url", "")
+        try:
+            # If file_path is already a full URL (old data), extract the path
+            if file_path.startswith("http"):
+                clean = file_path.split("?")[0]
+                if BUCKET in clean:
+                    file_path = clean.split(f"{BUCKET}/")[-1]
+
+            fresh_url = minio_get_url(BUCKET, file_path, expires_in=PRESIGNED_EXPIRY)
+        except Exception:
+            fresh_url = file_path  # fallback
+
+        result.append({**f, "file_url": fresh_url, "file_path": file_path})
+    return result
+
 
 class AccountingService:
     def __init__(self):
@@ -39,7 +62,7 @@ class AccountingService:
                     "SELECT * FROM accounting_files WHERE record_id = :record_id",
                     {"record_id": record["record_id"]}
                 )
-                result.append({**record, "files": files.data})
+                result.append({**record, "files": _enrich_files_with_urls(files.data)})
             return {"records": result, "total": len(result)}
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
@@ -57,7 +80,7 @@ class AccountingService:
                 "SELECT * FROM accounting_files WHERE record_id = :record_id",
                 {"record_id": record_id}
             )
-            return {**record.data[0], "files": files.data}
+            return {**record.data[0], "files": _enrich_files_with_urls(files.data)}
         except HTTPException:
             raise
         except Exception as e:
@@ -100,7 +123,6 @@ class AccountingService:
             if not existing.data:
                 raise HTTPException(status_code=404, detail="Record not found")
 
-            # Build dynamic update
             fields = []
             params = {"record_id": record_id}
             if title is not None:
@@ -135,7 +157,6 @@ class AccountingService:
             raise HTTPException(status_code=500, detail=str(e))
 
     async def delete_record(self, record_id: int, user_id: int = None):
-        """Delete record + all its files from storage and DB"""
         try:
             record = db_fetch_one(
                 "SELECT * FROM accounting_records WHERE record_id = :record_id",
@@ -147,11 +168,10 @@ class AccountingService:
             )
 
             for file in files.data:
-                self._delete_from_storage(file["file_url"])
+                self._delete_from_storage(file.get("file_path") or file.get("file_url", ""))
 
             record_title = record.data[0].get("title", "") if record.data else ""
 
-            # Cascades to accounting_files via FK
             db_execute(
                 "DELETE FROM accounting_records WHERE record_id = :record_id",
                 {"record_id": record_id}
@@ -173,11 +193,10 @@ class AccountingService:
             raise HTTPException(status_code=500, detail=str(e))
 
     async def delete_all_records(self, user_id: int):
-        """Delete ALL records and files"""
         try:
             files = db_fetch_all("SELECT * FROM accounting_files")
             for file in files.data:
-                self._delete_from_storage(file["file_url"])
+                self._delete_from_storage(file.get("file_path") or file.get("file_url", ""))
 
             db_execute("DELETE FROM accounting_records WHERE record_id > 0")
             return {"message": "All records deleted successfully"}
@@ -212,9 +231,7 @@ class AccountingService:
             # Upload to MinIO
             minio_upload(BUCKET, unique_name, content, file.content_type)
 
-            # Generate presigned URL (1 year)
-            file_url = minio_get_url(BUCKET, unique_name, expires_in=60 * 60 * 24 * 365)
-
+            # Save the object PATH (not presigned URL) — fresh URLs generated on each GET
             db_result = db_execute(
                 """
                 INSERT INTO accounting_files (record_id, file_name, file_type, file_url, file_size)
@@ -225,11 +242,19 @@ class AccountingService:
                     "record_id": record_id,
                     "file_name": file.filename,
                     "file_type": file_type,
-                    "file_url": file_url,
+                    "file_url": unique_name,   # store path, not presigned URL
                     "file_size": file_size,
                 }
             )
-            return db_result.data[0] if db_result.data else {}
+
+            if not db_result.data:
+                return {}
+
+            # Return with fresh presigned URL
+            row = db_result.data[0]
+            fresh_url = minio_get_url(BUCKET, unique_name, expires_in=PRESIGNED_EXPIRY)
+            return {**row, "file_url": fresh_url, "file_path": unique_name}
+
         except HTTPException:
             raise
         except Exception as e:
@@ -244,7 +269,7 @@ class AccountingService:
             if not file.data:
                 raise HTTPException(status_code=404, detail="File not found")
 
-            self._delete_from_storage(file.data[0]["file_url"])
+            self._delete_from_storage(file.data[0].get("file_path") or file.data[0].get("file_url", ""))
             db_execute(
                 "DELETE FROM accounting_files WHERE file_id = :file_id",
                 {"file_id": file_id}
@@ -259,14 +284,16 @@ class AccountingService:
     # HELPERS
     # ─────────────────────────────────────────────
 
-    def _delete_from_storage(self, file_url: str):
-        """Extract MinIO path from the presigned URL and delete the object."""
+    def _delete_from_storage(self, file_path: str):
+        """Delete object from MinIO. Accepts either a path or a full URL."""
         try:
-            # Presigned URLs look like: https://<host>/<bucket>/<path>?X-Amz-...
-            # Strip query string first
-            clean_url = file_url.split("?")[0]
-            if BUCKET in clean_url:
-                path = clean_url.split(f"{BUCKET}/")[-1]
-                minio_delete(BUCKET, path)
+            if not file_path:
+                return
+            # If it's a full URL, extract just the path
+            if file_path.startswith("http"):
+                clean = file_path.split("?")[0]
+                if BUCKET in clean:
+                    file_path = clean.split(f"{BUCKET}/")[-1]
+            minio_delete(BUCKET, file_path)
         except Exception:
-            pass  # Don't fail if storage delete fails
+            pass
