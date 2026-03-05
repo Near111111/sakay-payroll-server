@@ -1,5 +1,5 @@
 from app.core.db_client import db_fetch_all, db_fetch_one, db_execute
-from app.core.minio_client import minio_upload, minio_delete, minio_get_url
+from app.core.minio_client import minio_upload, minio_delete, minio_get_public_url
 from app.services.system_log_service import SystemLogService
 from app.schemas.system_log import SystemLogCreate
 from fastapi import HTTPException, status, UploadFile
@@ -19,12 +19,12 @@ ALLOWED_TYPES = {
     "image/webp": "image",
 }
 
-# MinIO max presigned URL expiry is 7 days (604800 seconds)
-PRESIGNED_EXPIRY = 60 * 60 * 24 * 7
+
+
 
 
 def _enrich_files_with_urls(files: list) -> list:
-    """Generate fresh presigned URLs for each file on every request."""
+    """Build public URLs for each file."""
     result = []
     for f in files:
         file_path = f.get("file_path") or f.get("file_url", "")
@@ -35,11 +35,11 @@ def _enrich_files_with_urls(files: list) -> list:
                 if BUCKET in clean:
                     file_path = clean.split(f"{BUCKET}/")[-1]
 
-            fresh_url = minio_get_url(BUCKET, file_path, expires_in=PRESIGNED_EXPIRY)
+            public_url = minio_get_public_url(BUCKET, file_path)
         except Exception:
-            fresh_url = file_path  # fallback
+            public_url = file_path  # fallback
 
-        result.append({**f, "file_url": fresh_url, "file_path": file_path})
+        result.append({**f, "file_url": public_url, "file_path": file_path})
     return result
 
 
@@ -250,10 +250,10 @@ class AccountingService:
             if not db_result.data:
                 return {}
 
-            # Return with fresh presigned URL
+            # Return with public URL
             row = db_result.data[0]
-            fresh_url = minio_get_url(BUCKET, unique_name, expires_in=PRESIGNED_EXPIRY)
-            return {**row, "file_url": fresh_url, "file_path": unique_name}
+            public_url = minio_get_public_url(BUCKET, unique_name)
+            return {**row, "file_url": public_url, "file_path": unique_name}
 
         except HTTPException:
             raise
