@@ -89,8 +89,12 @@ class OTPService:
 
         otp_record = result.data[0]
 
-        expires_at = datetime.fromisoformat(otp_record['expires_at'].replace('Z', '+00:00'))
-        now = datetime.utcnow().replace(tzinfo=expires_at.tzinfo)
+        # psycopg2 returns datetime object directly, not a string
+        expires_at = otp_record['expires_at']
+        if isinstance(expires_at, str):
+            expires_at = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
+
+        now = datetime.now(tz=expires_at.tzinfo)
 
         if now > expires_at:
             db_execute(
