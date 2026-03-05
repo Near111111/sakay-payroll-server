@@ -5,13 +5,14 @@ from datetime import datetime
 
 class SystemLogCreate(BaseModel):
     user_id: int
-    activity_type: str  # ADD, EDIT, DELETE
+    activity_type: str  # ADD, EDIT, DELETE, STOCK_IN, STOCK_OUT, UPLOAD, ARCHIVE
     employee_id: Optional[int] = None
     employee_name_fn: Optional[str] = None
     employee_name_mi: Optional[str] = None
     employee_name_ln: Optional[str] = None
-    employee_suffix: Optional[str] = None  # ✅ Added
+    employee_suffix: Optional[str] = None
     payroll_id: Optional[int] = None
+    description: Optional[str] = None
 
 
 class SystemLogResponse(BaseModel):
@@ -23,9 +24,10 @@ class SystemLogResponse(BaseModel):
     employee_name_fn: Optional[str] = None
     employee_name_mi: Optional[str] = None
     employee_name_ln: Optional[str] = None
-    employee_suffix: Optional[str] = None  # ✅ Added
+    employee_suffix: Optional[str] = None
     payroll_id: Optional[int] = None
-    
+    description: Optional[str] = None
+
     class Config:
         from_attributes = True
 

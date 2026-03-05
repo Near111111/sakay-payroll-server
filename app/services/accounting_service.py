@@ -1,4 +1,6 @@
 from app.core.supabase_client import get_supabase
+from app.services.system_log_service import SystemLogService
+from app.schemas.system_log import SystemLogCreate
 from fastapi import HTTPException, status, UploadFile
 from typing import List, Optional
 import uuid
@@ -21,6 +23,7 @@ ALLOWED_TYPES = {
 class AccountingService:
     def __init__(self):
         self.supabase = get_supabase()
+        self.log_service = SystemLogService()
 
     # ─────────────────────────────────────────────
     # RECORDS
@@ -73,13 +76,22 @@ class AccountingService:
             if not result.data:
                 raise HTTPException(status_code=500, detail="Failed to create record")
 
+            record_id = result.data[0].get('record_id', '')
+            try:
+                await self.log_service.create_log(SystemLogCreate(
+                    user_id=user_id, activity_type="ADD",
+                    description=f"[ACCOUNTING] Created record: {title} (type: {type}, ID: {record_id})"
+                ))
+            except Exception:
+                pass
+
             return {**result.data[0], "files": []}
         except HTTPException:
             raise
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-    async def update_record(self, record_id: int, title: Optional[str], type: Optional[str], notes: Optional[str]):
+    async def update_record(self, record_id: int, title: Optional[str], type: Optional[str], notes: Optional[str], user_id: int = None):
         try:
             existing = self.supabase.table("accounting_records") \
                 .select("*").eq("record_id", record_id).execute()
@@ -94,15 +106,28 @@ class AccountingService:
             self.supabase.table("accounting_records") \
                 .update(update_dict).eq("record_id", record_id).execute()
 
+            if user_id:
+                try:
+                    await self.log_service.create_log(SystemLogCreate(
+                        user_id=user_id, activity_type="EDIT",
+                        description=f"[ACCOUNTING] Updated record ID: {record_id} — {existing.data[0].get('title', '')}"
+                    ))
+                except Exception:
+                    pass
+
             return await self.get_record_by_id(record_id)
         except HTTPException:
             raise
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-    async def delete_record(self, record_id: int):
+    async def delete_record(self, record_id: int, user_id: int = None):
         """Delete record + all its files from storage and DB"""
         try:
+            # Get record info for logging
+            record = self.supabase.table("accounting_records") \
+                .select("*").eq("record_id", record_id).execute()
+
             # Get files first to delete from storage
             files = self.supabase.table("accounting_files") \
                 .select("*").eq("record_id", record_id).execute()
@@ -110,9 +135,20 @@ class AccountingService:
             for file in files.data:
                 self._delete_from_storage(file["file_url"])
 
+            record_title = record.data[0].get('title', '') if record.data else ''
+
             # Delete record (cascades to accounting_files)
             self.supabase.table("accounting_records") \
                 .delete().eq("record_id", record_id).execute()
+
+            if user_id:
+                try:
+                    await self.log_service.create_log(SystemLogCreate(
+                        user_id=user_id, activity_type="DELETE",
+                        description=f"[ACCOUNTING] Deleted record: {record_title} (ID: {record_id})"
+                    ))
+                except Exception:
+                    pass
 
             return {"message": f"Record {record_id} deleted successfully"}
         except HTTPException:
@@ -139,7 +175,7 @@ class AccountingService:
     # FILES
     # ─────────────────────────────────────────────
 
-    async def upload_file(self, record_id: int, file: UploadFile):
+    async def upload_file(self, record_id: int, file: UploadFile, user_id: int = None):
         try:
             # Validate record exists
             record = self.supabase.table("accounting_records") \
@@ -191,7 +227,7 @@ class AccountingService:
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-    async def delete_file(self, file_id: int):
+    async def delete_file(self, file_id: int, user_id: int = None):
         try:
             file = self.supabase.table("accounting_files") \
                 .select("*").eq("file_id", file_id).execute()

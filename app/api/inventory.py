@@ -41,7 +41,7 @@ async def create_item(
     current_admin: TokenData = Depends(get_current_admin)
 ):
     """Create new item with optional attributes (no variants yet)"""
-    return await inventory_service.create_item(item)
+    return await inventory_service.create_item(item, current_admin.user_id)
 
 
 @router.post("/items/{item_id}/variants", status_code=201)
@@ -80,7 +80,7 @@ async def update_item(
     current_admin: TokenData = Depends(get_current_admin)
 ):
     """Update item name or description only"""
-    return await inventory_service.update_item(item_id, item)
+    return await inventory_service.update_item(item_id, item, current_admin.user_id)
 
 
 @router.delete("/items/{item_id}")
@@ -89,7 +89,7 @@ async def delete_item(
     current_admin: TokenData = Depends(get_current_admin)
 ):
     """Delete item and all its variants + transactions"""
-    return await inventory_service.delete_item(item_id)
+    return await inventory_service.delete_item(item_id, current_admin.user_id)
 
 
 # ─────────────────────────────────────────────

@@ -1,5 +1,7 @@
 from app.core.supabase_client import get_supabase
 from app.schemas.inventory import ItemCreate, ItemUpdate, TransactionCreate
+from app.services.system_log_service import SystemLogService
+from app.schemas.system_log import SystemLogCreate
 from fastapi import HTTPException, status
 from datetime import datetime
 from typing import List
@@ -8,6 +10,7 @@ from typing import List
 class InventoryService:
     def __init__(self):
         self.supabase = get_supabase()
+        self.log_service = SystemLogService()
 
     # ─────────────────────────────────────────────
     # ITEMS
@@ -83,7 +86,7 @@ class InventoryService:
         except Exception as e:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
-    async def create_item(self, item_data: ItemCreate):
+    async def create_item(self, item_data: ItemCreate, user_id: int = None):
         """Create item with optional attributes and variants"""
         try:
             result = self.supabase.table('inventory_items').insert({
@@ -120,6 +123,15 @@ class InventoryService:
                                 "attr_id": val.attr_id,
                                 "value": val.value
                             }).execute()
+
+            if user_id:
+                try:
+                    await self.log_service.create_log(SystemLogCreate(
+                        user_id=user_id, activity_type="ADD",
+                        description=f"[INVENTORY] Added item: {item_data.name} (ID: {item_id})"
+                    ))
+                except Exception:
+                    pass
 
             return await self.get_item_by_id(item_id)
         except HTTPException:
@@ -172,7 +184,7 @@ class InventoryService:
         except Exception as e:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
-    async def update_item(self, item_id: int, item_data: ItemUpdate):
+    async def update_item(self, item_id: int, item_data: ItemUpdate, user_id: int = None):
         """Update item name/description only"""
         try:
             existing = self.supabase.table('inventory_items').select('*').eq('item_id', item_id).execute()
@@ -182,20 +194,39 @@ class InventoryService:
             update_dict = item_data.model_dump(exclude_unset=True)
             self.supabase.table('inventory_items').update(update_dict).eq('item_id', item_id).execute()
 
+            if user_id:
+                try:
+                    await self.log_service.create_log(SystemLogCreate(
+                        user_id=user_id, activity_type="EDIT",
+                        description=f"[INVENTORY] Updated item ID: {item_id} — {existing.data[0].get('name', '')}"
+                    ))
+                except Exception:
+                    pass
+
             return await self.get_item_by_id(item_id)
         except HTTPException:
             raise
         except Exception as e:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
-    async def delete_item(self, item_id: int):
+    async def delete_item(self, item_id: int, user_id: int = None):
         """Delete item (cascades to attributes, variants, transactions)"""
         try:
             existing = self.supabase.table('inventory_items').select('*').eq('item_id', item_id).execute()
             if not existing.data:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Item {item_id} not found")
 
+            item_name = existing.data[0].get('name', '')
             self.supabase.table('inventory_items').delete().eq('item_id', item_id).execute()
+
+            if user_id:
+                try:
+                    await self.log_service.create_log(SystemLogCreate(
+                        user_id=user_id, activity_type="DELETE",
+                        description=f"[INVENTORY] Deleted item: {item_name} (ID: {item_id})"
+                    ))
+                except Exception:
+                    pass
 
             return {"message": f"Item {item_id} deleted successfully"}
         except HTTPException:
@@ -264,6 +295,21 @@ class InventoryService:
 
             if not result.data:
                 raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to record transaction")
+
+            try:
+                item_name = item.data[0].get('name', '')
+                variant_label = ''
+                if transaction_data.variant_id:
+                    variant_label = await self._get_variant_label(transaction_data.variant_id)
+                    variant_label = f" ({variant_label})" if variant_label else ''
+                await self.log_service.create_log(SystemLogCreate(
+                    user_id=user_id,
+                    activity_type=f"STOCK_{transaction_data.type}",
+                    description=f"[INVENTORY] Stock {transaction_data.type}: {transaction_data.quantity}x {item_name}{variant_label}"
+                            f"{(' — ' + transaction_data.notes) if transaction_data.notes else ''}"
+                ))
+            except Exception:
+                pass
 
             return result.data[0]
         except HTTPException:

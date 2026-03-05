@@ -69,7 +69,7 @@ async def update_record(
     current_admin: TokenData = Depends(get_current_admin)
 ):
     """Update record title, type, or notes"""
-    return await accounting_service.update_record(record_id, title, type, notes)
+    return await accounting_service.update_record(record_id, title, type, notes, current_admin.user_id)
 
 
 @router.delete("/records/{record_id}")
@@ -78,7 +78,7 @@ async def delete_record(
     current_admin: TokenData = Depends(get_current_admin)
 ):
     """Delete specific record + all its files"""
-    return await accounting_service.delete_record(record_id)
+    return await accounting_service.delete_record(record_id, current_admin.user_id)
 
 
 @router.delete("/records")
@@ -100,7 +100,7 @@ async def upload_file(
     current_admin: TokenData = Depends(get_current_admin)
 ):
     """Upload a single file to an existing record"""
-    return await accounting_service.upload_file(record_id, file)
+    return await accounting_service.upload_file(record_id, file, current_admin.user_id)
 
 
 @router.delete("/files/{file_id}")
@@ -109,4 +109,4 @@ async def delete_file(
     current_admin: TokenData = Depends(get_current_admin)
 ):
     """Delete a specific file"""
-    return await accounting_service.delete_file(file_id)
+    return await accounting_service.delete_file(file_id, current_admin.user_id)
