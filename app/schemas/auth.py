@@ -6,19 +6,19 @@ class UserRegister(BaseModel):
     username: str
     user_password: str
     user_role: str = "admin"
-    
+
     @field_validator('username')
     def username_must_not_be_empty(cls, v):
         if not v or not v.strip():
             raise ValueError('Username cannot be empty')
         return v
-    
+
     @field_validator('user_password')
     def password_strength(cls, v):
         if len(v) < 8:
             raise ValueError('Password must be at least 8 characters')
         return v
-    
+
     @field_validator('user_role')
     def validate_user_role(cls, v):
         valid_roles = ["admin", "super_admin", "accounting", "field"]
@@ -128,3 +128,56 @@ class OTPSentResponse(BaseModel):
     """Response after sending OTP"""
     message: str
     phone_number: str
+
+
+# ─────────────────────────────────────────────
+# Forgot Password Schemas
+# ─────────────────────────────────────────────
+
+class ForgotPasswordRequest(BaseModel):
+    """Step 1 - Forgot Password: phone number lang"""
+    phone_number: str
+
+    @field_validator('phone_number')
+    def validate_phone(cls, v):
+        v = v.strip()
+        if not v:
+            raise ValueError('Phone number cannot be empty')
+        return v
+
+
+class ForgotPasswordVerifyOTP(BaseModel):
+    """Step 2 - Forgot Password: verify OTP, returns reset_token"""
+    phone_number: str
+    otp_code: str
+
+    @field_validator('otp_code')
+    def validate_otp_code(cls, v):
+        if not v or len(v) != 6 or not v.isdigit():
+            raise ValueError('OTP must be a 6-digit number')
+        return v
+
+
+class ForgotPasswordReset(BaseModel):
+    """Step 3 - Forgot Password: new password using reset_token"""
+    reset_token: str
+    new_password: str
+    confirm_password: str
+
+    @field_validator('new_password')
+    def password_strength(cls, v):
+        if len(v) < 8:
+            raise ValueError('Password must be at least 8 characters')
+        return v
+
+    @field_validator('confirm_password')
+    def passwords_match(cls, v, info):
+        if 'new_password' in info.data and v != info.data['new_password']:
+            raise ValueError('Passwords do not match')
+        return v
+
+
+class ForgotPasswordVerifyResponse(BaseModel):
+    """Response after OTP verified — contains one-time reset token"""
+    message: str
+    reset_token: str

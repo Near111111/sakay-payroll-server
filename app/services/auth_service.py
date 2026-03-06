@@ -337,3 +337,90 @@ class AuthService:
             raise
         except Exception as e:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+    # ─── Forgot Password: Step 1 — Send OTP to phone ─────────────────────────
+    async def forgot_password_send_otp(self, phone_number: str):
+        try:
+            # Check if phone number exists in users table
+            user = db_fetch_one(
+                "SELECT * FROM users WHERE phone_number = :phone_number",
+                {"phone_number": phone_number}
+            )
+            if not user.data:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="No account found with this phone number."
+                )
+
+            await self.otp_service.send_otp(phone_number, purpose="forgot_password")
+
+            masked = phone_number[:4] + "****" + phone_number[-3:]
+            return {
+                "message": f"OTP sent to {masked}. Please check your phone.",
+                "phone_number": masked
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+    # ─── Forgot Password: Step 2 — Verify OTP, return reset token ────────────
+    async def forgot_password_verify_otp(self, phone_number: str, otp_code: str):
+        try:
+            await self.otp_service.verify_otp(
+                phone_number=phone_number,
+                otp_code=otp_code,
+                purpose="forgot_password"
+            )
+
+            # Generate a short-lived reset token (reuse JWT, 10 min expiry)
+            reset_token = create_access_token(
+                data={"sub": phone_number, "type_override": "reset"},
+                expires_delta=timedelta(minutes=10)
+            )
+
+            return {
+                "message": "OTP verified. You may now reset your password.",
+                "reset_token": reset_token
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+    # ─── Forgot Password: Step 3 — Reset password using reset token ──────────
+    async def forgot_password_reset(self, reset_token: str, new_password: str):
+        try:
+            from app.core.security import verify_access_token
+            payload = verify_access_token(reset_token)
+
+            if not payload or payload.get("type_override") != "reset":
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid or expired reset token."
+                )
+
+            phone_number = payload.get("sub")
+
+            user = db_fetch_one(
+                "SELECT * FROM users WHERE phone_number = :phone_number",
+                {"phone_number": phone_number}
+            )
+            if not user.data:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="User not found."
+                )
+
+            db_execute(
+                "UPDATE users SET user_password = :user_password WHERE phone_number = :phone_number",
+                {
+                    "user_password": hash_password(new_password),
+                    "phone_number": phone_number
+                }
+            )
+
+            return {"message": "Password reset successfully. You may now log in."}
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
