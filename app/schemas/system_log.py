@@ -5,6 +5,7 @@ from datetime import datetime
 
 class SystemLogCreate(BaseModel):
     user_id: int
+    username: str  # ✅ Added
     activity_type: str  # ADD, EDIT, DELETE, STOCK_IN, STOCK_OUT, UPLOAD, ARCHIVE
     employee_id: Optional[int] = None
     employee_name_fn: Optional[str] = None
@@ -18,6 +19,7 @@ class SystemLogCreate(BaseModel):
 class SystemLogResponse(BaseModel):
     activity_id: int
     user_id: int
+    username: Optional[str] = None  # ✅ Added
     activity_type: str
     log_time: datetime
     employee_id: Optional[int] = None

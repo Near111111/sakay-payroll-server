@@ -13,17 +13,18 @@ class SystemLogService:
             result = db_execute(
                 """
                 INSERT INTO system_logs (
-                    user_id, activity_type, log_time, employee_id,
+                    user_id, username, activity_type, log_time, employee_id,
                     employee_name_fn, employee_name_mi, employee_name_ln, employee_suffix,
                     payroll_id, description
                 ) VALUES (
-                    :user_id, :activity_type, :log_time, :employee_id,
+                    :user_id, :username, :activity_type, :log_time, :employee_id,
                     :employee_name_fn, :employee_name_mi, :employee_name_ln, :employee_suffix,
                     :payroll_id, :description
                 ) RETURNING *
                 """,
                 {
                     "user_id": log_data.user_id,
+                    "username": log_data.username,  # ✅ Added
                     "activity_type": log_data.activity_type,
                     "log_time": get_philippine_time().isoformat(),
                     "employee_id": log_data.employee_id,
