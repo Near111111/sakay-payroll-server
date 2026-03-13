@@ -1,4 +1,4 @@
-from app.core.db_client import db_fetch_all, db_execute
+from app.core.db_client import db_fetch_all, db_fetch_one, db_execute
 from app.schemas.system_log import SystemLogCreate
 from app.core.timezone import get_philippine_time, to_philippine_time
 from fastapi import HTTPException, status
@@ -8,8 +8,24 @@ class SystemLogService:
     def __init__(self):
         pass
 
+    def _get_username(self, user_id: int) -> str:
+        """Lookup username from users table by user_id."""
+        try:
+            result = db_fetch_one(
+                "SELECT username FROM users WHERE user_id = :user_id",
+                {"user_id": user_id}
+            )
+            if result.data:
+                return result.data[0].get("username")
+        except Exception:
+            pass
+        return None
+
     async def create_log(self, log_data: SystemLogCreate):
         try:
+            # ✅ Auto-lookup username if not provided
+            username = log_data.username or self._get_username(log_data.user_id)
+
             result = db_execute(
                 """
                 INSERT INTO system_logs (
@@ -24,7 +40,7 @@ class SystemLogService:
                 """,
                 {
                     "user_id": log_data.user_id,
-                    "username": log_data.username,  # ✅ Added
+                    "username": username,  # ✅ Auto-resolved
                     "activity_type": log_data.activity_type,
                     "log_time": get_philippine_time().isoformat(),
                     "employee_id": log_data.employee_id,
