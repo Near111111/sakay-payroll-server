@@ -75,26 +75,6 @@ async def approve_archive(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.patch("/{archive_report_id}/unapprove", response_model=dict)
-async def unapprove_archive(
-        archive_report_id: int,
-        approval: ArchiveApprovalRequest,
-        current_admin: TokenData = Depends(get_current_admin)
-):
-    """
-    Remove approval from an archive report - Admin only
-    approver_role: "accounting" (Jonalyn) or "ceo" (Argel)
-    """
-    try:
-        return await archive_service.unapprove_archive(
-            archive_report_id=archive_report_id,
-            approver_role=approval.approver_role,
-            username=current_admin.username
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @router.delete("/{archive_report_id}")
 async def delete_archive(
         archive_report_id: int,
