@@ -195,6 +195,49 @@ class ArchiveService:
         except Exception as e:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to approve archive: {str(e)}")
 
+    async def unapprove_archive(self, archive_report_id: int, approver_role: str, username: str):
+        try:
+            archive = db_fetch_one(
+                "SELECT * FROM archive_reports WHERE archive_report_id = :id",
+                {"id": archive_report_id}
+            )
+
+            if not archive.data:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Archive report {archive_report_id} not found")
+
+            current = archive.data[0]
+
+            if approver_role == "accounting":
+                if not current.get('approved_by_accounting'):
+                    return {"message": "Not yet approved by accounting", "already_unapproved": True}
+                result = db_execute(
+                    "UPDATE archive_reports SET approved_by_accounting = FALSE, accounting_approved_at = NULL WHERE archive_report_id = :id RETURNING *",
+                    {"id": archive_report_id}
+                )
+            elif approver_role == "ceo":
+                if not current.get('approved_by_ceo'):
+                    return {"message": "Not yet approved by CEO", "already_unapproved": True}
+                result = db_execute(
+                    "UPDATE archive_reports SET approved_by_ceo = FALSE, ceo_approved_at = NULL WHERE archive_report_id = :id RETURNING *",
+                    {"id": archive_report_id}
+                )
+            else:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="approver_role must be 'accounting' or 'ceo'")
+
+            if not result.data:
+                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to update approval status")
+
+            return {
+                "message": f"Archive unapproved by {approver_role}",
+                "archive_report_id": archive_report_id,
+                "approver_role": approver_role,
+                "unapproved_by": username
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to unapprove archive: {str(e)}")
+
     async def get_all_archives(self):
         try:
             archives = db_fetch_all("SELECT * FROM archive_reports ORDER BY created_at DESC")

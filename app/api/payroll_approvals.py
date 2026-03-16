@@ -37,3 +37,20 @@ async def approve_payroll(
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/unapprove", response_model=dict)
+async def unapprove_payroll(
+    approval: PayrollApprovalRequest,
+    current_admin: TokenData = Depends(get_current_admin)
+):
+    """Remove approval for a payroll period by accounting or CEO"""
+    try:
+        return await approval_service.unapprove(
+            period_start=approval.period_start_date,
+            period_end=approval.period_end_date,
+            approver_role=approval.approver_role,
+            username=current_admin.username
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
