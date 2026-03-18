@@ -75,6 +75,7 @@ app.include_router(inventory.router)
 app.include_router(archives.router)
 app.include_router(accounting.router)
 app.include_router(payroll_approvals.router)
+from app.core.db_client import get_redis
 
 
 @app.get("/")
@@ -90,3 +91,14 @@ def health():
     return {
         "status": "healthy",
     }
+
+@app.get("/health/redis")
+def check_redis():
+    r = get_redis()
+    if not r:
+        return {"redis": "❌ not connected"}
+    try:
+        r.ping()
+        return {"redis": "✅ connected"}
+    except Exception as e:
+        return {"redis": f"❌ error: {str(e)}"}
