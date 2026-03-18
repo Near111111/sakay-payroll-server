@@ -1,8 +1,11 @@
-from app.core.db_client import db_fetch_all, db_fetch_one, db_execute
+from app.core.db_client import db_fetch_all, db_fetch_one, db_execute, cache_get, cache_set, cache_delete, cache_delete_pattern
 from app.schemas.payroll import PayrollCreate, PayrollUpdate
 from app.schemas.system_log import SystemLogCreate
 from app.services.system_log_service import SystemLogService
 from fastapi import HTTPException, status
+
+PAYROLLS_TTL = 180    # 3 minutes — payroll data changes more frequently
+PAYROLL_TTL = 300     # 5 minutes
 
 
 class PayrollService:
@@ -11,37 +14,76 @@ class PayrollService:
 
     async def get_all_payrolls(self, employee_id: int = None, pay_status: str = None):
         try:
+            # ✅ Cache key includes filters
+            cache_key = f"payrolls:list:{employee_id or 'all'}:{pay_status or 'all'}"
+            cached = cache_get(cache_key)
+            if cached:
+                return cached
+
             conditions = ["1=1"]
             params = {}
 
             if employee_id:
-                conditions.append("employee_id = :employee_id")
+                conditions.append("p.employee_id = :employee_id")
                 params["employee_id"] = employee_id
             if pay_status:
-                conditions.append("pay_status = :pay_status")
+                conditions.append("p.pay_status = :pay_status")
                 params["pay_status"] = pay_status
 
             where = " AND ".join(conditions)
-            result = db_fetch_all(f"SELECT * FROM payrolls WHERE {where} ORDER BY created_at DESC", params)
 
-            return {
+            # ✅ JOIN with employees to get name in one query
+            result = db_fetch_all(
+                f"""
+                SELECT
+                    p.*,
+                    e.employee_name_fn, e.employee_name_mi,
+                    e.employee_name_ln, e.employee_suffix
+                FROM payrolls p
+                JOIN employees e ON e.employee_id = p.employee_id
+                WHERE {where}
+                ORDER BY p.created_at DESC
+                """,
+                params
+            )
+
+            response = {
                 "payrolls": result.data,
                 "total": len(result.data),
                 "employee_id_filter": employee_id if employee_id else None,
                 "pay_status_filter": pay_status if pay_status else None
             }
+
+            cache_set(cache_key, response, PAYROLLS_TTL)
+            return response
+
         except Exception as e:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to fetch payrolls: {str(e)}")
 
     async def get_payroll_by_id(self, payroll_id: int):
         try:
+            cache_key = f"payrolls:{payroll_id}"
+            cached = cache_get(cache_key)
+            if cached:
+                return cached
+
             result = db_fetch_one(
-                "SELECT * FROM payrolls WHERE payroll_id = :payroll_id",
+                """
+                SELECT p.*, e.employee_name_fn, e.employee_name_mi,
+                       e.employee_name_ln, e.employee_suffix
+                FROM payrolls p
+                JOIN employees e ON e.employee_id = p.employee_id
+                WHERE p.payroll_id = :payroll_id
+                """,
                 {"payroll_id": payroll_id}
             )
             if not result.data:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Payroll with ID {payroll_id} not found")
-            return result.data[0]
+
+            payroll = result.data[0]
+            cache_set(cache_key, payroll, PAYROLL_TTL)
+            return payroll
+
         except HTTPException:
             raise
         except Exception as e:
@@ -63,13 +105,7 @@ class PayrollService:
 
             emp = employee_check.data[0]
 
-            existing_payrolls = db_fetch_one(
-                "SELECT payroll_id FROM payrolls ORDER BY payroll_id DESC LIMIT 1"
-            )
-            next_id = 1
-            if existing_payrolls.data:
-                next_id = existing_payrolls.data[0]['payroll_id'] + 1
-
+            # Payroll calculations
             basic_pay = float(emp.get('basic_pay') or 0)
             employee_sss = float(emp.get('sss_deduction') or 0)
             employee_phic = float(emp.get('phic_deduction') or 0)
@@ -91,16 +127,17 @@ class PayrollService:
             gross_pay = salary_rate * days_worked
             net_pay = gross_pay - total_deduction
 
+            # ✅ No manual ID generation — let DB handle it with SERIAL
             result = db_execute(
                 """
                 INSERT INTO payrolls (
-                    payroll_id, employee_id, days_worked, ot_hours, no_of_absents, hours_worked,
+                    employee_id, days_worked, ot_hours, no_of_absents, hours_worked,
                     tardiness_per_minute, tardiness_deduction, absent_deduction,
                     period_start_date, period_end_date, other_deductions, deduction_reason,
                     total_deduction, gross_pay, net_pay, working_days, made_by,
                     salary_rate, salary, pay_status
                 ) VALUES (
-                    :payroll_id, :employee_id, :days_worked, :ot_hours, :no_of_absents, :hours_worked,
+                    :employee_id, :days_worked, :ot_hours, :no_of_absents, :hours_worked,
                     :tardiness_per_minute, :tardiness_deduction, :absent_deduction,
                     :period_start_date, :period_end_date, :other_deductions, :deduction_reason,
                     :total_deduction, :gross_pay, :net_pay, :working_days, :made_by,
@@ -108,7 +145,6 @@ class PayrollService:
                 ) RETURNING *
                 """,
                 {
-                    "payroll_id": next_id,
                     "employee_id": payroll_data.employee_id,
                     "days_worked": days_worked,
                     "ot_hours": ot_hours,
@@ -137,6 +173,9 @@ class PayrollService:
 
             created_payroll = result.data[0]
 
+            # ✅ Invalidate payroll list caches
+            cache_delete_pattern("payrolls:list:*")
+
             await self.log_service.create_log(SystemLogCreate(
                 user_id=created_by_user_id,
                 activity_type="ADD",
@@ -149,6 +188,7 @@ class PayrollService:
             ))
 
             return created_payroll
+
         except HTTPException:
             raise
         except Exception as e:
@@ -206,7 +246,6 @@ class PayrollService:
                     val = payroll_data[date_field]
                     payroll_data[date_field] = val.isoformat() if hasattr(val, 'isoformat') else val
 
-            # Remove employee join fields from update dict
             for ef in ('employee_name_fn', 'employee_name_mi', 'employee_name_ln', 'employee_suffix',
                        'basic_pay', 'sss_deduction', 'phic_deduction', 'pagibig_deduction'):
                 payroll_data.pop(ef, None)
@@ -218,6 +257,10 @@ class PayrollService:
                 f"UPDATE payrolls SET {set_clauses} WHERE payroll_id = :payroll_id RETURNING *",
                 params
             )
+
+            # ✅ Invalidate caches
+            cache_delete(f"payrolls:{payroll_id}")
+            cache_delete_pattern("payrolls:list:*")
 
             await self.log_service.create_log(SystemLogCreate(
                 user_id=updated_by_user_id,
@@ -231,6 +274,7 @@ class PayrollService:
             ))
 
             return result.data[0]
+
         except HTTPException:
             raise
         except Exception as e:
@@ -252,8 +296,11 @@ class PayrollService:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Payroll with ID {payroll_id} not found")
 
             payroll = existing.data[0]
-
             db_execute("DELETE FROM payrolls WHERE payroll_id = :payroll_id", {"payroll_id": payroll_id})
+
+            # ✅ Invalidate caches
+            cache_delete(f"payrolls:{payroll_id}")
+            cache_delete_pattern("payrolls:list:*")
 
             await self.log_service.create_log(SystemLogCreate(
                 user_id=deleted_by_user_id,
@@ -272,6 +319,7 @@ class PayrollService:
                 "employee_id": payroll['employee_id'],
                 "deleted_by": deleted_by_user_id
             }
+
         except HTTPException:
             raise
         except Exception as e:

@@ -1,11 +1,10 @@
-from app.core.db_client import db_fetch_all, db_fetch_one, db_execute
+from app.core.db_client import db_fetch_all, db_fetch_one, db_execute, cache_get, cache_set, cache_delete, cache_delete_pattern
 from app.core.minio_client import minio_upload, minio_delete, minio_get_public_url
 from app.services.system_log_service import SystemLogService
 from app.schemas.system_log import SystemLogCreate
 from fastapi import HTTPException, status, UploadFile
 from typing import Optional
 import uuid
-
 
 BUCKET = "accounting-files"
 ALLOWED_TYPES = {
@@ -19,8 +18,8 @@ ALLOWED_TYPES = {
     "image/webp": "image",
 }
 
-
-
+RECORDS_LIST_TTL = 300   # 5 minutes
+RECORD_TTL = 600         # 10 minutes
 
 
 def _enrich_files_with_urls(files: list) -> list:
@@ -29,16 +28,13 @@ def _enrich_files_with_urls(files: list) -> list:
     for f in files:
         file_path = f.get("file_path") or f.get("file_url", "")
         try:
-            # If file_path is already a full URL (old data), extract the path
             if file_path.startswith("http"):
                 clean = file_path.split("?")[0]
                 if BUCKET in clean:
                     file_path = clean.split(f"{BUCKET}/")[-1]
-
             public_url = minio_get_public_url(BUCKET, file_path)
         except Exception:
-            public_url = file_path  # fallback
-
+            public_url = file_path
         result.append({**f, "file_url": public_url, "file_path": file_path})
     return result
 
@@ -53,34 +49,111 @@ class AccountingService:
 
     async def get_all_records(self):
         try:
-            records = db_fetch_all(
-                "SELECT * FROM accounting_records ORDER BY created_at DESC"
+            # ✅ Check cache first
+            cache_key = "accounting:records:all"
+            cached = cache_get(cache_key)
+            if cached:
+                return cached
+
+            # ✅ FIX: Single JOIN query instead of N+1 queries
+            # Old: 1 query for records + 1 query PER record for files = N+1 problem
+            # New: 1 query that gets everything at once
+            rows = db_fetch_all(
+                """
+                SELECT
+                    r.record_id, r.title, r.type, r.notes, r.created_by, r.created_at,
+                    f.file_id, f.file_name, f.file_type, f.file_url AS file_path, f.file_size
+                FROM accounting_records r
+                LEFT JOIN accounting_files f ON f.record_id = r.record_id
+                ORDER BY r.created_at DESC, f.file_id ASC
+                """
             )
+
+            # ✅ Group files under their parent record in Python
+            records_map = {}
+            for row in rows.data:
+                rid = row["record_id"]
+                if rid not in records_map:
+                    records_map[rid] = {
+                        "record_id": row["record_id"],
+                        "title": row["title"],
+                        "type": row["type"],
+                        "notes": row["notes"],
+                        "created_by": row["created_by"],
+                        "created_at": row["created_at"],
+                        "files": []
+                    }
+                if row["file_id"]:
+                    records_map[rid]["files"].append({
+                        "file_id": row["file_id"],
+                        "file_name": row["file_name"],
+                        "file_type": row["file_type"],
+                        "file_path": row["file_path"],
+                        "file_size": row["file_size"],
+                    })
+
+            # Enrich files with public URLs
             result = []
-            for record in records.data:
-                files = db_fetch_all(
-                    "SELECT * FROM accounting_files WHERE record_id = :record_id",
-                    {"record_id": record["record_id"]}
-                )
-                result.append({**record, "files": _enrich_files_with_urls(files.data)})
-            return {"records": result, "total": len(result)}
+            for record in records_map.values():
+                record["files"] = _enrich_files_with_urls(record["files"])
+                result.append(record)
+
+            response = {"records": result, "total": len(result)}
+            cache_set(cache_key, response, RECORDS_LIST_TTL)
+            return response
+
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
     async def get_record_by_id(self, record_id: int):
         try:
-            record = db_fetch_one(
-                "SELECT * FROM accounting_records WHERE record_id = :record_id",
+            # ✅ Cache individual record
+            cache_key = f"accounting:record:{record_id}"
+            cached = cache_get(cache_key)
+            if cached:
+                return cached
+
+            # ✅ Single JOIN query
+            rows = db_fetch_all(
+                """
+                SELECT
+                    r.record_id, r.title, r.type, r.notes, r.created_by, r.created_at,
+                    f.file_id, f.file_name, f.file_type, f.file_url AS file_path, f.file_size
+                FROM accounting_records r
+                LEFT JOIN accounting_files f ON f.record_id = r.record_id
+                WHERE r.record_id = :record_id
+                ORDER BY f.file_id ASC
+                """,
                 {"record_id": record_id}
             )
-            if not record.data:
+
+            if not rows.data:
                 raise HTTPException(status_code=404, detail="Record not found")
 
-            files = db_fetch_all(
-                "SELECT * FROM accounting_files WHERE record_id = :record_id",
-                {"record_id": record_id}
-            )
-            return {**record.data[0], "files": _enrich_files_with_urls(files.data)}
+            first = rows.data[0]
+            record = {
+                "record_id": first["record_id"],
+                "title": first["title"],
+                "type": first["type"],
+                "notes": first["notes"],
+                "created_by": first["created_by"],
+                "created_at": first["created_at"],
+                "files": []
+            }
+            for row in rows.data:
+                if row["file_id"]:
+                    record["files"].append({
+                        "file_id": row["file_id"],
+                        "file_name": row["file_name"],
+                        "file_type": row["file_type"],
+                        "file_path": row["file_path"],
+                        "file_size": row["file_size"],
+                    })
+
+            record["files"] = _enrich_files_with_urls(record["files"])
+            cache_set(cache_key, record, RECORD_TTL)
+            return record
+
         except HTTPException:
             raise
         except Exception as e:
@@ -99,6 +172,9 @@ class AccountingService:
             if not result.data:
                 raise HTTPException(status_code=500, detail="Failed to create record")
 
+            # ✅ Invalidate list cache on create
+            cache_delete("accounting:records:all")
+
             record_id = result.data[0].get("record_id", "")
             try:
                 await self.log_service.create_log(SystemLogCreate(
@@ -109,6 +185,7 @@ class AccountingService:
                 pass
 
             return {**result.data[0], "files": []}
+
         except HTTPException:
             raise
         except Exception as e:
@@ -141,6 +218,10 @@ class AccountingService:
                     params
                 )
 
+            # ✅ Invalidate caches
+            cache_delete(f"accounting:record:{record_id}")
+            cache_delete("accounting:records:all")
+
             if user_id:
                 try:
                     await self.log_service.create_log(SystemLogCreate(
@@ -151,6 +232,7 @@ class AccountingService:
                     pass
 
             return await self.get_record_by_id(record_id)
+
         except HTTPException:
             raise
         except Exception as e:
@@ -158,24 +240,32 @@ class AccountingService:
 
     async def delete_record(self, record_id: int, user_id: int = None):
         try:
-            record = db_fetch_one(
-                "SELECT * FROM accounting_records WHERE record_id = :record_id",
-                {"record_id": record_id}
-            )
-            files = db_fetch_all(
-                "SELECT * FROM accounting_files WHERE record_id = :record_id",
+            # ✅ Single query to get record + files at once
+            rows = db_fetch_all(
+                """
+                SELECT r.title, f.file_path, f.file_url
+                FROM accounting_records r
+                LEFT JOIN accounting_files f ON f.record_id = r.record_id
+                WHERE r.record_id = :record_id
+                """,
                 {"record_id": record_id}
             )
 
-            for file in files.data:
-                self._delete_from_storage(file.get("file_path") or file.get("file_url", ""))
+            record_title = rows.data[0].get("title", "") if rows.data else ""
 
-            record_title = record.data[0].get("title", "") if record.data else ""
+            for row in rows.data:
+                file_path = row.get("file_path") or row.get("file_url", "")
+                if file_path:
+                    self._delete_from_storage(file_path)
 
             db_execute(
                 "DELETE FROM accounting_records WHERE record_id = :record_id",
                 {"record_id": record_id}
             )
+
+            # ✅ Invalidate caches
+            cache_delete(f"accounting:record:{record_id}")
+            cache_delete("accounting:records:all")
 
             if user_id:
                 try:
@@ -187,6 +277,7 @@ class AccountingService:
                     pass
 
             return {"message": f"Record {record_id} deleted successfully"}
+
         except HTTPException:
             raise
         except Exception as e:
@@ -194,12 +285,17 @@ class AccountingService:
 
     async def delete_all_records(self, user_id: int):
         try:
-            files = db_fetch_all("SELECT * FROM accounting_files")
+            files = db_fetch_all("SELECT file_path, file_url FROM accounting_files")
             for file in files.data:
                 self._delete_from_storage(file.get("file_path") or file.get("file_url", ""))
 
             db_execute("DELETE FROM accounting_records WHERE record_id > 0")
+
+            # ✅ Clear all accounting caches
+            cache_delete_pattern("accounting:*")
+
             return {"message": "All records deleted successfully"}
+
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
@@ -228,10 +324,8 @@ class AccountingService:
             content = await file.read()
             file_size = len(content)
 
-            # Upload to MinIO
             minio_upload(BUCKET, unique_name, content, file.content_type)
 
-            # Save the object PATH (not presigned URL) — fresh URLs generated on each GET
             db_result = db_execute(
                 """
                 INSERT INTO accounting_files (record_id, file_name, file_type, file_url, file_size)
@@ -242,7 +336,7 @@ class AccountingService:
                     "record_id": record_id,
                     "file_name": file.filename,
                     "file_type": file_type,
-                    "file_url": unique_name,   # store path, not presigned URL
+                    "file_url": unique_name,
                     "file_size": file_size,
                 }
             )
@@ -250,7 +344,10 @@ class AccountingService:
             if not db_result.data:
                 return {}
 
-            # Return with public URL
+            # ✅ Invalidate record cache since files changed
+            cache_delete(f"accounting:record:{record_id}")
+            cache_delete("accounting:records:all")
+
             row = db_result.data[0]
             public_url = minio_get_public_url(BUCKET, unique_name)
             return {**row, "file_url": public_url, "file_path": unique_name}
@@ -269,12 +366,22 @@ class AccountingService:
             if not file.data:
                 raise HTTPException(status_code=404, detail="File not found")
 
-            self._delete_from_storage(file.data[0].get("file_path") or file.data[0].get("file_url", ""))
+            file_data = file.data[0]
+            self._delete_from_storage(file_data.get("file_path") or file_data.get("file_url", ""))
+
             db_execute(
                 "DELETE FROM accounting_files WHERE file_id = :file_id",
                 {"file_id": file_id}
             )
+
+            # ✅ Invalidate caches
+            record_id = file_data.get("record_id")
+            if record_id:
+                cache_delete(f"accounting:record:{record_id}")
+            cache_delete("accounting:records:all")
+
             return {"message": f"File {file_id} deleted"}
+
         except HTTPException:
             raise
         except Exception as e:
@@ -285,11 +392,9 @@ class AccountingService:
     # ─────────────────────────────────────────────
 
     def _delete_from_storage(self, file_path: str):
-        """Delete object from MinIO. Accepts either a path or a full URL."""
         try:
             if not file_path:
                 return
-            # If it's a full URL, extract just the path
             if file_path.startswith("http"):
                 clean = file_path.split("?")[0]
                 if BUCKET in clean:

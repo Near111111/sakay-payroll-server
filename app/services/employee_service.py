@@ -1,8 +1,12 @@
-from app.core.db_client import db_fetch_all, db_fetch_one, db_execute
+from app.core.db_client import db_fetch_all, db_fetch_one, db_execute, cache_get, cache_set, cache_delete, cache_delete_pattern
 from app.schemas.employee import EmployeeCreate, EmployeeUpdate
 from app.schemas.system_log import SystemLogCreate
 from app.services.system_log_service import SystemLogService
 from fastapi import HTTPException, status
+
+# Cache TTL constants
+EMPLOYEES_LIST_TTL = 300   # 5 minutes
+EMPLOYEE_TTL = 600         # 10 minutes
 
 
 class EmployeeService:
@@ -11,6 +15,12 @@ class EmployeeService:
 
     async def get_all_employees(self, search: str = None, status: str = None):
         try:
+            # ✅ Cache key includes filters so different filters cache separately
+            cache_key = f"employees:list:{search or 'all'}:{status or 'all'}"
+            cached = cache_get(cache_key)
+            if cached:
+                return cached
+
             conditions = ["1=1"]
             params = {}
 
@@ -26,14 +36,30 @@ class EmployeeService:
                 params["search"] = search_term
 
             where = " AND ".join(conditions)
-            result = db_fetch_all(f"SELECT * FROM employees WHERE {where}", params)
 
-            return {
+            # ✅ Only select needed columns instead of SELECT *
+            result = db_fetch_all(
+                f"""
+                SELECT employee_id, employee_name_fn, employee_name_mi, employee_name_ln,
+                       employee_suffix, employee_position, employee_status,
+                       basic_pay, sss_deduction, phic_deduction, pagibig_deduction, created_by
+                FROM employees
+                WHERE {where}
+                ORDER BY employee_name_ln, employee_name_fn
+                """,
+                params
+            )
+
+            response = {
                 "employees": result.data,
                 "total": len(result.data),
                 "search": search if search else None,
                 "status_filter": status if status else None
             }
+
+            cache_set(cache_key, response, EMPLOYEES_LIST_TTL)
+            return response
+
         except Exception as e:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -42,8 +68,20 @@ class EmployeeService:
 
     async def get_employee_by_id(self, employee_id: int):
         try:
+            # ✅ Cache individual employee
+            cache_key = f"employees:{employee_id}"
+            cached = cache_get(cache_key)
+            if cached:
+                return cached
+
             result = db_fetch_one(
-                "SELECT * FROM employees WHERE employee_id = :employee_id",
+                """
+                SELECT employee_id, employee_name_fn, employee_name_mi, employee_name_ln,
+                       employee_suffix, employee_position, employee_status,
+                       basic_pay, sss_deduction, phic_deduction, pagibig_deduction, created_by
+                FROM employees
+                WHERE employee_id = :employee_id
+                """,
                 {"employee_id": employee_id}
             )
             if not result.data:
@@ -51,7 +89,11 @@ class EmployeeService:
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"Employee with ID {employee_id} not found"
                 )
-            return result.data[0]
+
+            employee = result.data[0]
+            cache_set(cache_key, employee, EMPLOYEE_TTL)
+            return employee
+
         except HTTPException:
             raise
         except Exception as e:
@@ -62,27 +104,20 @@ class EmployeeService:
 
     async def create_employee(self, employee_data: EmployeeCreate, created_by_user_id: int):
         try:
-            existing = db_fetch_one(
-                "SELECT employee_id FROM employees ORDER BY employee_id DESC LIMIT 1"
-            )
-            next_id = 1
-            if existing.data:
-                next_id = existing.data[0]['employee_id'] + 1
-
+            # ✅ Use SERIAL/sequence instead of manual MAX(id)+1
             result = db_execute(
                 """
                 INSERT INTO employees (
-                    employee_id, employee_name_fn, employee_name_mi, employee_name_ln,
+                    employee_name_fn, employee_name_mi, employee_name_ln,
                     employee_suffix, employee_position, employee_status,
                     basic_pay, sss_deduction, phic_deduction, pagibig_deduction, created_by
                 ) VALUES (
-                    :employee_id, :employee_name_fn, :employee_name_mi, :employee_name_ln,
+                    :employee_name_fn, :employee_name_mi, :employee_name_ln,
                     :employee_suffix, :employee_position, :employee_status,
                     :basic_pay, :sss_deduction, :phic_deduction, :pagibig_deduction, :created_by
                 ) RETURNING *
                 """,
                 {
-                    "employee_id": next_id,
                     "employee_name_fn": employee_data.employee_name_fn,
                     "employee_name_mi": employee_data.employee_name_mi,
                     "employee_name_ln": employee_data.employee_name_ln,
@@ -102,6 +137,9 @@ class EmployeeService:
 
             created_employee = result.data[0]
 
+            # ✅ Invalidate all employee list caches
+            cache_delete_pattern("employees:list:*")
+
             await self.log_service.create_log(SystemLogCreate(
                 user_id=created_by_user_id,
                 activity_type="ADD",
@@ -113,6 +151,7 @@ class EmployeeService:
             ))
 
             return created_employee
+
         except HTTPException:
             raise
         except Exception as e:
@@ -140,6 +179,10 @@ class EmployeeService:
 
             updated_emp = result.data[0]
 
+            # ✅ Invalidate caches for this employee and all lists
+            cache_delete(f"employees:{employee_id}")
+            cache_delete_pattern("employees:list:*")
+
             await self.log_service.create_log(SystemLogCreate(
                 user_id=updated_by_user_id,
                 activity_type="EDIT",
@@ -151,6 +194,7 @@ class EmployeeService:
             ))
 
             return updated_emp
+
         except HTTPException:
             raise
         except Exception as e:
@@ -166,7 +210,6 @@ class EmployeeService:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Employee with ID {employee_id} not found")
 
             emp = existing.data[0]
-
             full_name_parts = [
                 emp['employee_name_fn'],
                 emp['employee_name_mi'] if emp['employee_name_mi'] else '',
@@ -174,13 +217,18 @@ class EmployeeService:
             ]
             if emp.get('employee_suffix'):
                 full_name_parts.append(emp['employee_suffix'])
-
             full_name = ' '.join(filter(None, full_name_parts)).strip()
 
             db_execute(
                 "DELETE FROM employees WHERE employee_id = :employee_id",
                 {"employee_id": employee_id}
             )
+
+            # ✅ Invalidate caches
+            cache_delete(f"employees:{employee_id}")
+            cache_delete_pattern("employees:list:*")
+            # Also invalidate payroll caches for this employee
+            cache_delete_pattern(f"payrolls:list:*{employee_id}*")
 
             await self.log_service.create_log(SystemLogCreate(
                 user_id=deleted_by_user_id,
@@ -193,11 +241,12 @@ class EmployeeService:
             ))
 
             return {
-                "message": f"Employee {employee_id} ({full_name}) deleted successfully (including all payroll records)",
+                "message": f"Employee {employee_id} ({full_name}) deleted successfully",
                 "employee_id": employee_id,
                 "employee_name": full_name,
                 "deleted_by": deleted_by_user_id
             }
+
         except HTTPException:
             raise
         except Exception as e:
