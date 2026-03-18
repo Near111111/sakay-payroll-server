@@ -37,16 +37,8 @@ class EmployeeService:
 
             where = " AND ".join(conditions)
 
-            # ✅ Only select needed columns instead of SELECT *
             result = db_fetch_all(
-                f"""
-                SELECT employee_id, employee_name_fn, employee_name_mi, employee_name_ln,
-                       employee_suffix, employee_position, employee_status,
-                       basic_pay, sss_deduction, phic_deduction, pagibig_deduction, created_by
-                FROM employees
-                WHERE {where}
-                ORDER BY employee_name_ln, employee_name_fn
-                """,
+                f"SELECT * FROM employees WHERE {where} ORDER BY employee_name_ln, employee_name_fn",
                 params
             )
 
@@ -75,13 +67,7 @@ class EmployeeService:
                 return cached
 
             result = db_fetch_one(
-                """
-                SELECT employee_id, employee_name_fn, employee_name_mi, employee_name_ln,
-                       employee_suffix, employee_position, employee_status,
-                       basic_pay, sss_deduction, phic_deduction, pagibig_deduction, created_by
-                FROM employees
-                WHERE employee_id = :employee_id
-                """,
+                "SELECT * FROM employees WHERE employee_id = :employee_id",
                 {"employee_id": employee_id}
             )
             if not result.data:
