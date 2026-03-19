@@ -429,9 +429,11 @@ class InventoryService:
             where = " AND ".join(conditions)
             result = db_fetch_all(
                 f"""
-                SELECT t.*, i.name as item_name
+                SELECT t.*, i.name as item_name,
+                       u.username as username
                 FROM inventory_transactions t
                 JOIN inventory_items i ON i.item_id = t.item_id
+                LEFT JOIN users u ON u.user_id = t.created_by
                 WHERE {where}
                 ORDER BY t.created_at DESC
                 """,
