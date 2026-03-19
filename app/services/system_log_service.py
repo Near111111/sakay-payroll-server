@@ -98,7 +98,7 @@ class SystemLogService:
             if cached:
                 return cached
 
-            conditions = ["1=1"]
+            conditions = ["activity_type NOT IN ('STOCK_IN', 'STOCK_OUT')"]
             params = {}
 
             if activity_type:
