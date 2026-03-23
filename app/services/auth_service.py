@@ -179,8 +179,13 @@ class AuthService:
                 "user_role": payload.get("user_role")
             }
 
+            # ✅ FIX: Return both access_token AND refresh_token
+            # Before: only access_token was returned → refresh_token got deleted from
+            # localStorage on the frontend because refreshData.refresh_token was undefined,
+            # causing permanent logout after the first token rotation.
             return {
                 "access_token": create_access_token(data=new_token_data),
+                "refresh_token": create_refresh_token(data=new_token_data),
                 "token_type": "bearer",
                 "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60
             }
@@ -337,10 +342,10 @@ class AuthService:
             raise
         except Exception as e:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
     # ─── Forgot Password: Step 1 — Send OTP to phone ─────────────────────────
     async def forgot_password_send_otp(self, phone_number: str):
         try:
-            # Check if phone number exists in users table
             user = db_fetch_one(
                 "SELECT * FROM users WHERE phone_number = :phone_number",
                 {"phone_number": phone_number}
@@ -372,7 +377,6 @@ class AuthService:
                 purpose="forgot_password"
             )
 
-            # Generate a short-lived reset token (reuse JWT, 10 min expiry)
             reset_token = create_access_token(
                 data={"sub": phone_number, "type_override": "reset"},
                 expires_delta=timedelta(minutes=10)

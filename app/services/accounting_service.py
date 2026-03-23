@@ -49,15 +49,11 @@ class AccountingService:
 
     async def get_all_records(self):
         try:
-            # ✅ Check cache first
             cache_key = "accounting:records:all"
             cached = cache_get(cache_key)
             if cached:
                 return cached
 
-            # ✅ FIX: Single JOIN query instead of N+1 queries
-            # Old: 1 query for records + 1 query PER record for files = N+1 problem
-            # New: 1 query that gets everything at once
             rows = db_fetch_all(
                 """
                 SELECT
@@ -69,7 +65,6 @@ class AccountingService:
                 """
             )
 
-            # ✅ Group files under their parent record in Python
             records_map = {}
             for row in rows.data:
                 rid = row["record_id"]
@@ -92,7 +87,6 @@ class AccountingService:
                         "file_size": row["file_size"],
                     })
 
-            # Enrich files with public URLs
             result = []
             for record in records_map.values():
                 record["files"] = _enrich_files_with_urls(record["files"])
@@ -107,13 +101,11 @@ class AccountingService:
 
     async def get_record_by_id(self, record_id: int):
         try:
-            # ✅ Cache individual record
             cache_key = f"accounting:record:{record_id}"
             cached = cache_get(cache_key)
             if cached:
                 return cached
 
-            # ✅ Single JOIN query
             rows = db_fetch_all(
                 """
                 SELECT
@@ -172,7 +164,6 @@ class AccountingService:
             if not result.data:
                 raise HTTPException(status_code=500, detail="Failed to create record")
 
-            # ✅ Invalidate list cache on create
             cache_delete("accounting:records:all")
 
             record_id = result.data[0].get("record_id", "")
@@ -218,7 +209,6 @@ class AccountingService:
                     params
                 )
 
-            # ✅ Invalidate caches
             cache_delete(f"accounting:record:{record_id}")
             cache_delete("accounting:records:all")
 
@@ -240,7 +230,6 @@ class AccountingService:
 
     async def delete_record(self, record_id: int, user_id: int = None):
         try:
-            # ✅ Single query to get record + files at once
             rows = db_fetch_all(
                 """
                 SELECT r.title, f.file_path, f.file_url
@@ -251,7 +240,13 @@ class AccountingService:
                 {"record_id": record_id}
             )
 
-            record_title = rows.data[0].get("title", "") if rows.data else ""
+            # ✅ FIX: Return 404 if record doesn't exist instead of silently
+            # proceeding — this was causing a 500 because the DELETE query ran
+            # on a non-existent record and downstream code broke.
+            if not rows.data:
+                raise HTTPException(status_code=404, detail="Record not found")
+
+            record_title = rows.data[0].get("title", "")
 
             for row in rows.data:
                 file_path = row.get("file_path") or row.get("file_url", "")
@@ -263,7 +258,6 @@ class AccountingService:
                 {"record_id": record_id}
             )
 
-            # ✅ Invalidate caches
             cache_delete(f"accounting:record:{record_id}")
             cache_delete("accounting:records:all")
 
@@ -291,11 +285,20 @@ class AccountingService:
 
             db_execute("DELETE FROM accounting_records WHERE record_id > 0")
 
-            # ✅ Clear all accounting caches
             cache_delete_pattern("accounting:*")
+
+            try:
+                await self.log_service.create_log(SystemLogCreate(
+                    user_id=user_id, activity_type="DELETE",
+                    description="[ACCOUNTING] Deleted ALL records and files"
+                ))
+            except Exception:
+                pass
 
             return {"message": "All records deleted successfully"}
 
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
@@ -344,7 +347,6 @@ class AccountingService:
             if not db_result.data:
                 return {}
 
-            # ✅ Invalidate record cache since files changed
             cache_delete(f"accounting:record:{record_id}")
             cache_delete("accounting:records:all")
 
@@ -374,7 +376,6 @@ class AccountingService:
                 {"file_id": file_id}
             )
 
-            # ✅ Invalidate caches
             record_id = file_data.get("record_id")
             if record_id:
                 cache_delete(f"accounting:record:{record_id}")
