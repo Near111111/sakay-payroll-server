@@ -42,7 +42,6 @@ async def create_record(
     Create a new accounting record with optional file uploads.
     Accepts multipart/form-data so files can be uploaded at the same time.
     """
-    # Create the record first
     record = await accounting_service.create_record(
         title=title,
         type=type,
@@ -50,13 +49,11 @@ async def create_record(
         user_id=current_admin.user_id
     )
 
-    # Upload files if any
     if files:
         for file in files:
-            if file.filename:  # skip empty file inputs
+            if file.filename:
                 await accounting_service.upload_file(record["record_id"], file)
 
-    # Return updated record with files
     return await accounting_service.get_record_by_id(record["record_id"])
 
 
@@ -72,6 +69,15 @@ async def update_record(
     return await accounting_service.update_record(record_id, title, type, notes, current_admin.user_id)
 
 
+# ✅ FIXED: /records (static) BEFORE /records/{record_id} (dynamic)
+@router.delete("/records")
+async def delete_all_records(
+    current_admin: TokenData = Depends(get_current_admin)
+):
+    """Delete ALL records and files"""
+    return await accounting_service.delete_all_records(current_admin.user_id)
+
+
 @router.delete("/records/{record_id}")
 async def delete_record(
     record_id: int,
@@ -79,14 +85,6 @@ async def delete_record(
 ):
     """Delete specific record + all its files"""
     return await accounting_service.delete_record(record_id, current_admin.user_id)
-
-
-@router.delete("/records")
-async def delete_all_records(
-    current_admin: TokenData = Depends(get_current_admin)
-):
-    """Delete ALL records and files"""
-    return await accounting_service.delete_all_records(current_admin.user_id)
 
 
 # ─────────────────────────────────────────────
