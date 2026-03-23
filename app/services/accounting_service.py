@@ -232,7 +232,7 @@ class AccountingService:
         try:
             rows = db_fetch_all(
                 """
-                SELECT r.title, f.file_path, f.file_url
+                SELECT r.title, f.file_url
                 FROM accounting_records r
                 LEFT JOIN accounting_files f ON f.record_id = r.record_id
                 WHERE r.record_id = :record_id
@@ -240,16 +240,15 @@ class AccountingService:
                 {"record_id": record_id}
             )
 
-            # ✅ FIX: Return 404 if record doesn't exist instead of silently
-            # proceeding — this was causing a 500 because the DELETE query ran
-            # on a non-existent record and downstream code broke.
+            # ✅ FIX 1: Return 404 if record doesn't exist
             if not rows.data:
                 raise HTTPException(status_code=404, detail="Record not found")
 
             record_title = rows.data[0].get("title", "")
 
+            # ✅ FIX 2: Use file_url only — no file_path column in accounting_files
             for row in rows.data:
-                file_path = row.get("file_path") or row.get("file_url", "")
+                file_path = row.get("file_url", "")
                 if file_path:
                     self._delete_from_storage(file_path)
 
