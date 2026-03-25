@@ -5,6 +5,13 @@ from fastapi import HTTPException, status
 
 LOGS_PAGE_TTL = 60  # 1 minute per page cache
 
+# Sentinel values that should be treated as NULL / no suffix
+_EMPTY_SENTINELS = {"{EMPTY}", "EMPTY", "NULL", "NONE", "N/A", "-", ""}
+
+# VARCHAR limits matching the actual DB columns
+_ACTIVITY_TYPE_MAX_LEN = 10   # run: ALTER TABLE system_logs ALTER COLUMN activity_type TYPE VARCHAR(10);
+_SUFFIX_MAX_LEN = 5           # employees.employee_suffix and system_logs.employee_suffix
+
 
 class SystemLogService:
     def __init__(self):
@@ -34,9 +41,50 @@ class SystemLogService:
                     pass
         return logs
 
+    def _sanitize_activity_type(self, activity_type: str) -> str:
+        """
+        Normalize activity_type and hard-truncate to VARCHAR(10).
+
+        The DB column was originally VARCHAR(5) which was too short for
+        DELETE (6), STOCK_IN (8), STOCK_OUT (9), UPLOAD (6), ARCHIVE (7).
+        After running the migration (ALTER COLUMN activity_type TYPE VARCHAR(10))
+        this is a safety net only.
+        """
+        value = (activity_type or "").strip().upper()
+        return value[:_ACTIVITY_TYPE_MAX_LEN]
+
+    def _sanitize_suffix(self, suffix) -> str | None:
+        """
+        FIX: Convert bad sentinel values and over-length strings to NULL.
+
+        The employee_suffix column is VARCHAR(5). Some employees were saved
+        with the literal string '{EMPTY}' (7 chars) which causes a
+        StringDataRightTruncation error every time a log is written for them.
+
+        Sentinel values like '{EMPTY}', 'NULL', '' are all returned as None
+        so PostgreSQL stores a proper NULL instead.
+        """
+        if suffix is None:
+            return None
+        cleaned = str(suffix).strip()
+        if cleaned.upper() in _EMPTY_SENTINELS:
+            return None
+        # Hard-truncate anything still too long so it never crashes
+        if len(cleaned) > _SUFFIX_MAX_LEN:
+            cleaned = cleaned[:_SUFFIX_MAX_LEN]
+        return cleaned or None
+
     async def create_log(self, log_data: SystemLogCreate):
         try:
             username = log_data.username or self._get_username(log_data.user_id)
+
+            # FIX 1: Sanitize activity_type to prevent VARCHAR overflow
+            safe_activity_type = self._sanitize_activity_type(log_data.activity_type)
+
+            # FIX 2: Sanitize employee_suffix — '{EMPTY}' (7 chars) stored in
+            #         the DB was overflowing the VARCHAR(5) column on every
+            #         log write, causing the 500 on PUT /payrolls/:id
+            safe_suffix = self._sanitize_suffix(log_data.employee_suffix)
 
             result = db_execute(
                 """
@@ -53,13 +101,13 @@ class SystemLogService:
                 {
                     "user_id": log_data.user_id,
                     "username": username,
-                    "activity_type": log_data.activity_type,
+                    "activity_type": safe_activity_type,
                     "log_time": get_philippine_time().isoformat(),
                     "employee_id": log_data.employee_id,
                     "employee_name_fn": log_data.employee_name_fn,
                     "employee_name_mi": log_data.employee_name_mi,
                     "employee_name_ln": log_data.employee_name_ln,
-                    "employee_suffix": log_data.employee_suffix,
+                    "employee_suffix": safe_suffix,
                     "payroll_id": log_data.payroll_id,
                     "description": log_data.description
                 }
@@ -71,10 +119,9 @@ class SystemLogService:
                     detail="Failed to create log"
                 )
 
-            # ✅ Invalidate log page caches when a new log is created
             cache_delete_pattern("logs:page:*")
-
             return result.data[0]
+
         except HTTPException:
             raise
         except Exception as e:
@@ -92,7 +139,6 @@ class SystemLogService:
         limit: int = 5,
     ):
         try:
-            # ✅ Cache key includes all filter params + page
             cache_key = f"logs:page:{page}:{limit}:{activity_type or 'all'}:{user_id or 'all'}:{employee_id or 'all'}"
             cached = cache_get(cache_key)
             if cached:
@@ -113,14 +159,12 @@ class SystemLogService:
 
             where = " AND ".join(conditions)
 
-            # ✅ Get total count first (for pagination metadata)
             count_result = db_fetch_one(
                 f"SELECT COUNT(*) as total FROM system_logs WHERE {where}",
                 params
             )
             total = count_result.data[0]["total"] if count_result.data else 0
 
-            # ✅ Fetch only the current page
             offset = (page - 1) * limit
             params["limit"] = limit
             params["offset"] = offset
@@ -136,8 +180,7 @@ class SystemLogService:
             )
 
             logs = self._convert_log_times(result.data)
-
-            total_pages = (total + limit - 1) // limit  # ceiling division
+            total_pages = (total + limit - 1) // limit
 
             response = {
                 "logs": logs,
