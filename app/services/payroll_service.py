@@ -7,6 +7,12 @@ from fastapi import HTTPException, status
 PAYROLLS_TTL = 180    # 3 minutes — payroll data changes more frequently
 PAYROLL_TTL = 300     # 5 minutes
 
+# Fields that come from the JOIN but must never be written back to the payrolls table
+_NON_PAYROLL_FIELDS = (
+    'employee_name_fn', 'employee_name_mi', 'employee_name_ln', 'employee_suffix',
+    'basic_pay', 'sss_deduction', 'phic_deduction', 'pagibig_deduction',
+)
+
 
 class PayrollService:
     def __init__(self):
@@ -14,7 +20,7 @@ class PayrollService:
 
     async def get_all_payrolls(self, employee_id: int = None, pay_status: str = None):
         try:
-            # ✅ Cache key includes filters
+            # Cache key includes filters
             cache_key = f"payrolls:list:{employee_id or 'all'}:{pay_status or 'all'}"
             cached = cache_get(cache_key)
             if cached:
@@ -32,7 +38,7 @@ class PayrollService:
 
             where = " AND ".join(conditions)
 
-            # ✅ JOIN with employees to get name in one query
+            # JOIN with employees to get name in one query
             result = db_fetch_all(
                 f"""
                 SELECT
@@ -127,7 +133,7 @@ class PayrollService:
             gross_pay = salary_rate * days_worked
             net_pay = gross_pay - total_deduction
 
-            # ✅ No manual ID generation — let DB handle it with SERIAL
+            # No manual ID generation — let DB handle it with SERIAL
             result = db_execute(
                 """
                 INSERT INTO payrolls (
@@ -173,7 +179,7 @@ class PayrollService:
 
             created_payroll = result.data[0]
 
-            # ✅ Invalidate payroll list caches
+            # Invalidate payroll list caches
             cache_delete_pattern("payrolls:list:*")
 
             await self.log_service.create_log(SystemLogCreate(
@@ -212,6 +218,7 @@ class PayrollService:
 
             payroll_record = existing.data[0]
 
+            # Recalculate derived fields if any calculation-affecting field was sent
             if any(k in payroll_data for k in ('working_days', 'days_worked', 'tardiness_per_minute', 'other_deductions', 'no_of_absents', 'hours_worked')):
                 basic_pay = float(payroll_record.get('basic_pay') or 0)
                 employee_sss = float(payroll_record.get('sss_deduction') or 0)
@@ -241,14 +248,24 @@ class PayrollService:
                 payroll_data['gross_pay'] = round(gross_pay, 2)
                 payroll_data['net_pay'] = round(net_pay, 2)
 
+            # Serialize date fields
             for date_field in ('period_start_date', 'period_end_date'):
                 if date_field in payroll_data and payroll_data[date_field]:
                     val = payroll_data[date_field]
                     payroll_data[date_field] = val.isoformat() if hasattr(val, 'isoformat') else val
 
-            for ef in ('employee_name_fn', 'employee_name_mi', 'employee_name_ln', 'employee_suffix',
-                       'basic_pay', 'sss_deduction', 'phic_deduction', 'pagibig_deduction'):
+            # ✅ FIX: Strip fields that don't belong in the payrolls table
+            # (these come from the JOIN on employees and must never be written back)
+            for ef in _NON_PAYROLL_FIELDS:
                 payroll_data.pop(ef, None)
+
+            # ✅ FIX: Guard against an empty update dict, which would produce
+            #         "UPDATE payrolls SET  WHERE ..." — invalid SQL → 500 error
+            if not payroll_data:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="No valid fields provided for update"
+                )
 
             set_clauses = ", ".join([f"{k} = :{k}" for k in payroll_data.keys()])
             params = {**payroll_data, "payroll_id": payroll_id}
@@ -258,7 +275,16 @@ class PayrollService:
                 params
             )
 
-            # ✅ Invalidate caches
+            # ✅ FIX: Guard against an empty RETURNING result (shouldn't happen
+            #         after the existence check above, but prevents an unhandled
+            #         IndexError on result.data[0] if the DB returns nothing)
+            if not result.data:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Update succeeded but no data was returned from the database"
+                )
+
+            # Invalidate caches
             cache_delete(f"payrolls:{payroll_id}")
             cache_delete_pattern("payrolls:list:*")
 
@@ -298,7 +324,7 @@ class PayrollService:
             payroll = existing.data[0]
             db_execute("DELETE FROM payrolls WHERE payroll_id = :payroll_id", {"payroll_id": payroll_id})
 
-            # ✅ Invalidate caches
+            # Invalidate caches
             cache_delete(f"payrolls:{payroll_id}")
             cache_delete_pattern("payrolls:list:*")
 
