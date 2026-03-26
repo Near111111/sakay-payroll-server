@@ -60,7 +60,7 @@ async def add_variants(
       { "values": [{ "attr_name": "size", "value": "M" }, { "attr_name": "color", "value": "Blue" }] }
     ]
     """
-    return await inventory_service.add_variants_to_item(item_id, variants)
+    return await inventory_service.add_variants_to_item(item_id, variants, current_admin.user_id)
 
 
 @router.delete("/items/{item_id}/variants/{variant_id}")

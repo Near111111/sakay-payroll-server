@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(c:UsersJomarDesktopsakay-payroll-server.venvScriptsactivate)",
+      "Bash(source /c/Users/Jomar/Desktop/sakay-payroll-server/.venv/Scripts/activate)",
+      "Bash(xargs grep:*)",
+      "Bash(grep -r \"STOCK_IN\\\\|STOCK_OUT\\\\|UPLOAD\\\\|ARCHIVE\" C:UsersJomarDesktopsakay-payroll-server/app --include=*.py)"
+    ]
+  }
+}

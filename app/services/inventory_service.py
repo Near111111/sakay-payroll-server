@@ -209,7 +209,7 @@ class InventoryService:
         except Exception as e:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
-    async def add_variants_to_item(self, item_id: int, variants_data: List[dict]):
+    async def add_variants_to_item(self, item_id: int, variants_data: List[dict], user_id: int = None):
         try:
             item = db_fetch_one("SELECT * FROM inventory_items WHERE item_id = :item_id", {"item_id": item_id})
             if not item.data:
@@ -241,6 +241,21 @@ class InventoryService:
             # ✅ Invalidate caches
             cache_delete(f"inventory:item:{item_id}")
             cache_delete("inventory:items:all")
+
+            if user_id:
+                try:
+                    item_name_row = db_fetch_one(
+                        "SELECT name FROM inventory_items WHERE item_id = :item_id",
+                        {"item_id": item_id}
+                    )
+                    item_name = item_name_row.data[0].get("name", "") if item_name_row.data else ""
+                    count = len(variants_data)
+                    await self.log_service.create_log(SystemLogCreate(
+                        user_id=user_id, activity_type="ADD",
+                        description=f"[INVENTORY] Added {count} variant(s) to item: {item_name} (Item ID: {item_id})"
+                    ))
+                except Exception:
+                    pass
 
             return await self.get_item_by_id(item_id)
 
