@@ -70,7 +70,7 @@ async def delete_variant(
     current_admin: TokenData = Depends(get_current_admin)
 ):
     """Delete a specific variant and its values + transactions"""
-    return await inventory_service.delete_variant(item_id, variant_id)
+    return await inventory_service.delete_variant(item_id, variant_id, current_admin.user_id)
 
 
 @router.put("/items/{item_id}")

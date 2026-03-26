@@ -311,7 +311,7 @@ class InventoryService:
         except Exception as e:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
-    async def delete_variant(self, item_id: int, variant_id: int):
+    async def delete_variant(self, item_id: int, variant_id: int, user_id: int = None):
         try:
             item = db_fetch_one("SELECT item_id FROM inventory_items WHERE item_id = :item_id", {"item_id": item_id})
             if not item.data:
@@ -331,6 +331,23 @@ class InventoryService:
             # ✅ Invalidate caches
             cache_delete(f"inventory:item:{item_id}")
             cache_delete("inventory:items:all")
+
+            if user_id:
+                try:
+                    # Get item name for the log description
+                    item_name_row = db_fetch_one(
+                        "SELECT name FROM inventory_items WHERE item_id = :item_id",
+                        {"item_id": item_id}
+                    )
+                    item_name = item_name_row.data[0].get("name", "") if item_name_row.data else ""
+                    variant_label = await self._get_variant_label(variant_id)
+                    label_str = f" ({variant_label})" if variant_label else ""
+                    await self.log_service.create_log(SystemLogCreate(
+                        user_id=user_id, activity_type="DELETE",
+                        description=f"[INVENTORY] Deleted variant{label_str} from item: {item_name} (Item ID: {item_id}, Variant ID: {variant_id})"
+                    ))
+                except Exception:
+                    pass
 
             return {"message": f"Variant {variant_id} deleted successfully"}
 
