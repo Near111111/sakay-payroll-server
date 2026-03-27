@@ -209,6 +209,58 @@ class InventoryService:
         except Exception as e:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
+    async def add_attributes_to_item(self, item_id: int, attributes: List[str], user_id: int = None):
+        try:
+            item = db_fetch_one("SELECT * FROM inventory_items WHERE item_id = :item_id", {"item_id": item_id})
+            if not item.data:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found")
+
+            existing_transactions = db_fetch_one(
+                "SELECT COUNT(*) as count FROM inventory_transactions WHERE item_id = :item_id AND variant_id IS NULL",
+                {"item_id": item_id}
+            )
+            if existing_transactions.data and existing_transactions.data[0]['count'] > 0:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Cannot add attributes to an item that already has stock recorded. Please reset the stock first."
+                )
+
+            existing_attrs = db_fetch_all(
+                "SELECT attribute_name FROM inventory_attributes WHERE item_id = :item_id",
+                {"item_id": item_id}
+            )
+            existing_names = {a['attribute_name'].lower() for a in existing_attrs.data}
+
+            added = []
+            for attr_name in attributes:
+                if attr_name.lower() in existing_names:
+                    continue
+                db_execute(
+                    "INSERT INTO inventory_attributes (item_id, attribute_name) VALUES (:item_id, :attribute_name)",
+                    {"item_id": item_id, "attribute_name": attr_name}
+                )
+                added.append(attr_name)
+
+            cache_delete(f"inventory:item:{item_id}")
+            cache_delete("inventory:items:all")
+
+            if user_id and added:
+                try:
+                    item_name = item.data[0].get('name', '')
+                    await self.log_service.create_log(SystemLogCreate(
+                        user_id=user_id, activity_type="EDIT",
+                        description=f"[INVENTORY] Added attributes {added} to item: {item_name} (Item ID: {item_id})"
+                    ))
+                except Exception:
+                    pass
+
+            return await self.get_item_by_id(item_id)
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
     async def add_variants_to_item(self, item_id: int, variants_data: List[dict], user_id: int = None):
         try:
             item = db_fetch_one("SELECT * FROM inventory_items WHERE item_id = :item_id", {"item_id": item_id})

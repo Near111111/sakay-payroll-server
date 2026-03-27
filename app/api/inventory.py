@@ -44,6 +44,22 @@ async def create_item(
     return await inventory_service.create_item(item, current_admin.user_id)
 
 
+@router.post("/items/{item_id}/attributes", status_code=201)
+async def add_attributes(
+    item_id: int,
+    attributes: List[str],
+    current_admin: TokenData = Depends(get_current_admin)
+):
+    """
+    Add attributes to an existing item (even if it was created without any).
+    Skips duplicates automatically.
+
+    Example body:
+    ["size", "color"]
+    """
+    return await inventory_service.add_attributes_to_item(item_id, attributes, current_admin.user_id)
+
+
 @router.post("/items/{item_id}/variants", status_code=201)
 async def add_variants(
     item_id: int,
