@@ -9,10 +9,16 @@ from fastapi import HTTPException, status
 class OTPService:
     def __init__(self):
         self.OTP_EXPIRY_MINUTES = 5
-        self.TXTBOX_API_URL = "https://ws-v2.txtbox.com/messaging/v1/sms/push"
+        self.KUDOSITY_API_URL = "https://api.transmitmessage.com/v2/sms"
 
     def generate_otp(self) -> str:
         return str(random.randint(100000, 999999))
+
+    def _format_phone(self, phone_number: str) -> str:
+        # Convert 09XXXXXXXXX to 639XXXXXXXXX (E.164 without +)
+        if phone_number.startswith("0"):
+            return "63" + phone_number[1:]
+        return phone_number
 
     async def send_otp(self, phone_number: str, purpose: str) -> bool:
         otp_code = self.generate_otp()
@@ -42,18 +48,20 @@ class OTPService:
         )
 
         payload = {
-            "number": phone_number,
+            "recipient": self._format_phone(phone_number),
+            "sender": settings.KUDOSITY_SENDER,
             "message": f"Your OTP code is: {otp_code} from Sakay ph. It expires in {self.OTP_EXPIRY_MINUTES} minutes. Do not share this with anyone."
         }
 
         headers = {
-            "X-TXTBOX-Auth": settings.TXTBOX_API_KEY,
-            "Content-Type": "application/json"
+            "x-api-key": settings.KUDOSITY_API_KEY,
+            "Content-Type": "application/json",
+            "accept": "application/json"
         }
 
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                self.TXTBOX_API_URL,
+                self.KUDOSITY_API_URL,
                 json=payload,
                 headers=headers,
                 timeout=10.0

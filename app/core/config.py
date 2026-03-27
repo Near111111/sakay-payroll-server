@@ -30,7 +30,8 @@ class Settings(BaseSettings):
     MINIO_PUBLIC_URL: str
 
     # ── SMS OTP ───────────────────────────────────────────────
-    TXTBOX_API_KEY: str
+    KUDOSITY_API_KEY: str
+    KUDOSITY_SENDER: str
 
 
 settings = Settings()
