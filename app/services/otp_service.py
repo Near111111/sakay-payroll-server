@@ -9,7 +9,7 @@ from fastapi import HTTPException, status
 class OTPService:
     def __init__(self):
         self.OTP_EXPIRY_MINUTES = 5
-        self.KUDOSITY_API_URL = "https://api.transmitmessage.com/v2/sms"
+        self.TXTBOX_API_URL = "https://ws-v2.txtbox.com/messaging/v1/sms/push"
 
     def generate_otp(self) -> str:
         return str(random.randint(100000, 999999))
@@ -48,21 +48,19 @@ class OTPService:
         )
 
         payload = {
-            "recipient": self._format_phone(phone_number),
-            "sender": settings.KUDOSITY_SENDER,
-            "message": f"Your OTP code is: {otp_code} from Sakay ph. It expires in {self.OTP_EXPIRY_MINUTES} minutes. Do not share this with anyone."
+            "number": self._format_phone(phone_number),
+            "message": f"Your OTP code is: {otp_code} from Sakay ph. It expires in {self.OTP_EXPIRY_MINUTES} minutes. Do not share this with anyone.",
+            "sender": settings.TXTBOX_SENDER,
         }
 
         headers = {
-            "x-api-key": settings.KUDOSITY_API_KEY,
-            "Content-Type": "application/json",
-            "accept": "application/json"
+            "X-TXTBOX-Auth": settings.TXTBOX_API_KEY,
         }
 
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                self.KUDOSITY_API_URL,
-                json=payload,
+                self.TXTBOX_API_URL,
+                data=payload,
                 headers=headers,
                 timeout=10.0
             )
