@@ -137,6 +137,12 @@ class AuthService:
             if user_record['user_role'] not in ("admin", "super_admin", "accounting", "field"):
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
 
+            if not user_record.get('is_active', True):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Your account has been disabled. Please contact your administrator."
+                )
+
             if not verify_password(user_data.user_password, user_record['user_password']):
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Invalid username or password", headers={"WWW-Authenticate": "Bearer"})
@@ -269,6 +275,12 @@ class AuthService:
 
             if user_record['user_role'] not in ("admin", "super_admin", "accounting", "field"):
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied. Admin access required.")
+
+            if not user_record.get('is_active', True):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Your account has been disabled. Please contact your administrator."
+                )
 
             if not verify_password(user_password, user_record['user_password']):
                 self._record_failed_attempt(username)
