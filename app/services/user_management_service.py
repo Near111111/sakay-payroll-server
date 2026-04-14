@@ -5,12 +5,13 @@ from fastapi import HTTPException, status
 class UserManagementService:
 
     def get_all_users(self):
-        """Get all users with their status"""
+        """Get all users with their status, excluding super admins"""
         try:
             result = db_fetch_all(
                 """
                 SELECT user_id, username, user_role, is_active
                 FROM users
+                WHERE user_role != 'super_admin'
                 ORDER BY user_id ASC
                 """
             )
@@ -24,21 +25,18 @@ class UserManagementService:
     def toggle_user_status(self, target_user_id: int, requesting_user_id: int, requesting_user_role: str):
         """Enable or disable a user account"""
         try:
-            # Super admin only
             if requesting_user_role != "super_admin":
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Only super admins can enable/disable user accounts."
                 )
 
-            # Cannot disable yourself
             if target_user_id == requesting_user_id:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="You cannot disable your own account."
                 )
 
-            # Check if target user exists
             user_result = db_fetch_one(
                 "SELECT user_id, username, user_role, is_active FROM users WHERE user_id = :user_id",
                 {"user_id": target_user_id}
@@ -51,14 +49,12 @@ class UserManagementService:
 
             user = user_result.data[0]
 
-            # Cannot disable another super_admin
             if user["user_role"] == "super_admin":
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Cannot disable a super admin account."
                 )
 
-            # Toggle the status
             new_status = not user["is_active"]
 
             db_execute(
