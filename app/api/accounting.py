@@ -10,6 +10,39 @@ accounting_service = AccountingService()
 
 
 # ─────────────────────────────────────────────
+# SUMMARY
+# ─────────────────────────────────────────────
+
+@router.get("/summary")
+async def get_monthly_summary(
+    current_admin: TokenData = Depends(get_current_admin)
+):
+    """
+    Get total expenses vs income (sales + orders) for the current month.
+    Returns a net figure and a per-type breakdown.
+    """
+    return await accounting_service.get_monthly_summary()
+
+
+# ─────────────────────────────────────────────
+# ARCHIVE
+# ─────────────────────────────────────────────
+
+@router.get("/archive")
+async def get_archive(
+    year:  Optional[int] = None,
+    month: Optional[int] = None,
+    current_admin: TokenData = Depends(get_current_admin)
+):
+    """
+    Retrieve archived records (previous months).
+    Optionally filter by ?year=2025&month=3
+    Returns records grouped by period with per-period summaries.
+    """
+    return await accounting_service.get_archive(year=year, month=month)
+
+
+# ─────────────────────────────────────────────
 # RECORDS
 # ─────────────────────────────────────────────
 
@@ -17,7 +50,7 @@ accounting_service = AccountingService()
 async def get_all_records(
     current_admin: TokenData = Depends(get_current_admin)
 ):
-    """Get all accounting records with their files"""
+    """Get all accounting records (current month) with their files"""
     return await accounting_service.get_all_records()
 
 
@@ -32,20 +65,25 @@ async def get_record(
 
 @router.post("/records", status_code=201)
 async def create_record(
-    title: str = Form(...),
-    type: str = Form(...),
-    notes: Optional[str] = Form(None),
-    files: List[UploadFile] = File(default=[]),
+    title:  str            = Form(...),
+    type:   str            = Form(...),
+    notes:  Optional[str]  = Form(None),
+    amount: Optional[float] = Form(None),
+    files:  List[UploadFile] = File(default=[]),
     current_admin: TokenData = Depends(get_current_admin)
 ):
     """
-    Create a new accounting record with optional file uploads.
+    Create a new accounting record.
+    - `amount` is REQUIRED for type: expense | sales | orders
+    - `amount` is OPTIONAL (ignored) for type: other
     Accepts multipart/form-data so files can be uploaded at the same time.
+    On the first create of a new month, previous-month records are auto-archived.
     """
     record = await accounting_service.create_record(
         title=title,
         type=type,
         notes=notes,
+        amount=amount,
         user_id=current_admin.user_id
     )
 
@@ -60,21 +98,23 @@ async def create_record(
 @router.put("/records/{record_id}")
 async def update_record(
     record_id: int,
-    title: Optional[str] = Form(None),
-    type: Optional[str] = Form(None),
-    notes: Optional[str] = Form(None),
+    title:  Optional[str]   = Form(None),
+    type:   Optional[str]   = Form(None),
+    notes:  Optional[str]   = Form(None),
+    amount: Optional[float] = Form(None),
     current_admin: TokenData = Depends(get_current_admin)
 ):
-    """Update record title, type, or notes"""
-    return await accounting_service.update_record(record_id, title, type, notes, current_admin.user_id)
+    """Update record title, type, notes, or amount"""
+    return await accounting_service.update_record(
+        record_id, title, type, notes, amount, current_admin.user_id
+    )
 
 
-# ✅ FIXED: /records (static) BEFORE /records/{record_id} (dynamic)
 @router.delete("/records")
 async def delete_all_records(
     current_admin: TokenData = Depends(get_current_admin)
 ):
-    """Delete ALL records and files"""
+    """Delete ALL current-month records and files"""
     return await accounting_service.delete_all_records(current_admin.user_id)
 
 
@@ -83,7 +123,7 @@ async def delete_record(
     record_id: int,
     current_admin: TokenData = Depends(get_current_admin)
 ):
-    """Delete specific record + all its files"""
+    """Delete a specific record and all its files"""
     return await accounting_service.delete_record(record_id, current_admin.user_id)
 
 
