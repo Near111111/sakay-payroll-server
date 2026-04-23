@@ -1,5 +1,5 @@
 from app.core.db_client import db_fetch_all, db_fetch_one, db_execute, cache_get, cache_set, cache_delete, cache_delete_pattern
-from app.core.minio_client import minio_upload, minio_delete, minio_get_public_url
+from app.core.storage_client import storage_upload, storage_delete, storage_presigned_url
 from app.services.system_log_service import SystemLogService
 from app.schemas.system_log import SystemLogCreate
 from fastapi import HTTPException, status, UploadFile
@@ -7,7 +7,7 @@ from typing import Optional
 from datetime import datetime
 import uuid
 
-BUCKET = "accounting-files"
+FILE_KEY_PREFIX = "accounting-files"
 ALLOWED_TYPES = {
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
     "application/vnd.ms-excel": "xls",
@@ -26,20 +26,22 @@ RECORDS_LIST_TTL = 300   # 5 minutes
 RECORD_TTL = 600         # 10 minutes
 
 
+# REMOVE the whole function and replace with:
 def _enrich_files_with_urls(files: list) -> list:
-    """Build public URLs for each file."""
+    """Attach a presigned STANDARD-tier (24 h) URL to each file."""
     result = []
     for f in files:
         file_path = f.get("file_path") or f.get("file_url", "")
         try:
             if file_path.startswith("http"):
                 clean = file_path.split("?")[0]
-                if BUCKET in clean:
-                    file_path = clean.split(f"{BUCKET}/")[-1]
-            public_url = minio_get_public_url(BUCKET, file_path)
+                if FILE_KEY_PREFIX in clean:
+                    file_path = clean.split(f"{FILE_KEY_PREFIX}/")[-1]
+                    file_path = f"{FILE_KEY_PREFIX}/{file_path}"
+            presigned_url = storage_presigned_url(file_path)
         except Exception:
-            public_url = file_path
-        result.append({**f, "file_url": public_url, "file_path": file_path})
+            presigned_url = file_path
+        result.append({**f, "file_url": presigned_url, "file_path": file_path})
     return result
 
 
@@ -631,11 +633,11 @@ class AccountingService:
                 )
 
             ext = file.filename.split(".")[-1].lower()
-            unique_name = f"{record_id}/{uuid.uuid4()}.{ext}"
+            unique_name = f"{FILE_KEY_PREFIX}/{record_id}/{uuid.uuid4()}.{ext}"
             content = await file.read()
             file_size = len(content)
 
-            minio_upload(BUCKET, unique_name, content, file.content_type)
+            storage_upload(unique_name, content, file.content_type)
 
             db_result = db_execute(
                 """
@@ -659,8 +661,8 @@ class AccountingService:
             cache_delete("accounting:records:all")
 
             row = db_result.data[0]
-            public_url = minio_get_public_url(BUCKET, unique_name)
-            return {**row, "file_url": public_url, "file_path": unique_name}
+            presigned_url = storage_presigned_url(unique_name)
+            return {**row, "file_url": presigned_url, "file_path": unique_name}
 
         except HTTPException:
             raise
@@ -706,8 +708,9 @@ class AccountingService:
                 return
             if file_path.startswith("http"):
                 clean = file_path.split("?")[0]
-                if BUCKET in clean:
-                    file_path = clean.split(f"{BUCKET}/")[-1]
-            minio_delete(BUCKET, file_path)
+                if FILE_KEY_PREFIX in clean:
+                    file_path = clean.split(f"{FILE_KEY_PREFIX}/")[-1]
+                    file_path = f"{FILE_KEY_PREFIX}/{file_path}"
+            storage_delete(file_path)
         except Exception:
             pass
