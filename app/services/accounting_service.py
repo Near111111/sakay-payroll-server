@@ -28,16 +28,30 @@ RECORD_TTL = 600         # 10 minutes
 
 # REMOVE the whole function and replace with:
 def _enrich_files_with_urls(files: list) -> list:
-    """Attach a presigned STANDARD-tier (24 h) URL to each file."""
+    """Attach a fresh presigned URL to each file, reconstructing the S3 key from whatever is stored."""
     result = []
     for f in files:
         file_path = f.get("file_path") or f.get("file_url", "")
         try:
             if file_path.startswith("http"):
+                # Strip query string to get the bare object path
                 clean = file_path.split("?")[0]
                 if FILE_KEY_PREFIX in clean:
-                    file_path = clean.split(f"{FILE_KEY_PREFIX}/")[-1]
-                    file_path = f"{FILE_KEY_PREFIX}/{file_path}"
+                    # e.g. https://.../accounting-files/57/uuid.png
+                    file_path = FILE_KEY_PREFIX + "/" + clean.split(f"{FILE_KEY_PREFIX}/")[-1]
+                else:
+                    # Older records stored without prefix — path after bucket name
+                    # e.g. https://t3.storageapi.dev/bucket-xxx/57/uuid.png
+                    # Extract everything after the bucket segment
+                    parts = clean.split("/")
+                    # Find the bucket segment (contains "bucket-") and take the rest
+                    bucket_idx = next(
+                        (i for i, p in enumerate(parts) if "bucket-" in p or "storageapi" in p.lower()),
+                        None
+                    )
+                    if bucket_idx is not None and bucket_idx + 1 < len(parts):
+                        file_path = "/".join(parts[bucket_idx + 1:])
+                    # else fall through with whatever file_path was
             presigned_url = storage_presigned_url(file_path)
         except Exception:
             presigned_url = file_path
@@ -709,8 +723,15 @@ class AccountingService:
             if file_path.startswith("http"):
                 clean = file_path.split("?")[0]
                 if FILE_KEY_PREFIX in clean:
-                    file_path = clean.split(f"{FILE_KEY_PREFIX}/")[-1]
-                    file_path = f"{FILE_KEY_PREFIX}/{file_path}"
+                    file_path = FILE_KEY_PREFIX + "/" + clean.split(f"{FILE_KEY_PREFIX}/")[-1]
+                else:
+                    parts = clean.split("/")
+                    bucket_idx = next(
+                        (i for i, p in enumerate(parts) if "bucket-" in p or "storageapi" in p.lower()),
+                        None
+                    )
+                    if bucket_idx is not None and bucket_idx + 1 < len(parts):
+                        file_path = "/".join(parts[bucket_idx + 1:])
             storage_delete(file_path)
         except Exception:
             pass
