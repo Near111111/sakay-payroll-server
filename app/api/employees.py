@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from app.core.dependencies import get_current_admin
+from app.core.storage_client import storage_presigned_url
 from app.schemas.auth import TokenData
 from app.schemas.employee import EmployeeCreate, EmployeeUpdate, EmployeeResponse, EmployeeList
 from app.services.employee_service import EmployeeService
@@ -11,17 +12,19 @@ employee_service = EmployeeService()
 
 @router.get("/", response_model=EmployeeList)
 async def get_all_employees(
-    search: str = Query(None, description="Search by first name, middle initial, or last name"),
-    status: str = Query(None, description="Filter by employee status (Regular, Probationary, Contractual, Project-based)"),  # ✅ Added
-    current_admin: TokenData = Depends(get_current_admin)
+        search: str = Query(None, description="Search by first name, middle initial, or last name"),
+        status: str = Query(None,
+                            description="Filter by employee status (Regular, Probationary, Contractual, Project-based)"),
+        # ✅ Added
+        current_admin: TokenData = Depends(get_current_admin)
 ):
     """
     Get all employees from database - Admin only
-    
+
     Optional query parameters:
     - search: Filter employees by name
     - status: Filter by employee status (Regular, Probationary, Contractual, Project-based)
-    
+
     Examples:
     - /employees/ - Get all employees
     - /employees/?search=juan - Search for employees
@@ -33,8 +36,8 @@ async def get_all_employees(
 
 @router.get("/{employee_id}", response_model=EmployeeResponse)
 async def get_employee(
-    employee_id: int,
-    current_admin: TokenData = Depends(get_current_admin)
+        employee_id: int,
+        current_admin: TokenData = Depends(get_current_admin)
 ):
     """Get single employee by ID - Admin only"""
     return await employee_service.get_employee_by_id(employee_id)
@@ -42,35 +45,65 @@ async def get_employee(
 
 @router.post("/", response_model=EmployeeResponse, status_code=201)
 async def create_employee(
-    employee: EmployeeCreate,
-    current_admin: TokenData = Depends(get_current_admin)
+        employee: EmployeeCreate,
+        current_admin: TokenData = Depends(get_current_admin)
 ):
     """
     Create new employee - Admin only
-    
+
     employee_status options (for dropdown):
     - Regular (default)
     - Probationary
     - Contractual
     - Project-based
-    
+
     Automatically logs ADD action to system_logs
     """
     return await employee_service.create_employee(employee, current_admin.user_id)
 
 
+@router.get("/{employee_id}/photo-url")
+async def get_employee_photo_url(
+        employee_id: int,
+        current_admin: TokenData = Depends(get_current_admin)
+):
+    """
+    Get a fresh presigned S3 URL for an employee's photo - Admin only
+
+    Generates a new presigned URL on every request so the photo
+    never appears broken due to expiry.
+
+    Returns:
+    - url: fresh presigned URL (valid for 1 hour)
+    - key: the S3 object key stored in image_metadata
+    """
+    employee = await employee_service.get_employee_by_id(employee_id)
+
+    image_key = employee.get("image_metadata") if isinstance(employee, dict) else getattr(employee, "image_metadata",
+                                                                                          None)
+
+    if not image_key:
+        raise HTTPException(status_code=404, detail="Employee has no photo uploaded")
+
+    try:
+        url = storage_presigned_url(image_key)
+        return {"url": url, "key": image_key}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.put("/{employee_id}", response_model=EmployeeResponse)
 async def update_employee(
-    employee_id: int,
-    employee_data: EmployeeUpdate,
-    current_admin: TokenData = Depends(get_current_admin)
+        employee_id: int,
+        employee_data: EmployeeUpdate,
+        current_admin: TokenData = Depends(get_current_admin)
 ):
     """
     Update employee - Admin only
-    
+
     All fields are optional - only provide fields you want to update
     Can update employee_status using dropdown values
-    
+
     Automatically logs EDIT action to system_logs
     """
     update_dict = employee_data.model_dump(exclude_unset=True)
@@ -79,12 +112,12 @@ async def update_employee(
 
 @router.delete("/{employee_id}")
 async def delete_employee(
-    employee_id: int,
-    current_admin: TokenData = Depends(get_current_admin)
+        employee_id: int,
+        current_admin: TokenData = Depends(get_current_admin)
 ):
     """
     Delete employee - Admin only
-    
+
     Note: Cannot delete employee if they have payroll records
     Automatically logs DELETE action to system_logs
     """
