@@ -6,11 +6,10 @@ On fetch, URLs are checked for validity and refreshed automatically if expired.
 """
 
 import logging
-import re
 from datetime import datetime, timezone
 from urllib.parse import urlparse, parse_qs
 
-import requests
+import httpx
 import boto3
 from botocore.client import Config
 from botocore.exceptions import ClientError
@@ -130,9 +129,9 @@ def storage_url_is_active(presigned_url: str) -> bool:
     if not presigned_url:
         return False
     try:
-        response = requests.head(presigned_url, timeout=5, allow_redirects=True)
+        response = httpx.head(presigned_url, timeout=5, follow_redirects=True)
         return response.status_code == 200
-    except requests.RequestException as exc:
+    except httpx.RequestError as exc:
         logger.warning("storage_url_is_active HEAD request failed: %s", exc)
         # If we can't reach the URL at all, treat as inactive
         return False
