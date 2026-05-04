@@ -1,12 +1,61 @@
 from app.core.db_client import db_fetch_all, db_fetch_one, db_execute, cache_get, cache_set, cache_delete, cache_delete_pattern
+from app.core.storage_client import (
+    storage_presigned_url,
+    storage_extract_key_from_url,
+    storage_url_needs_refresh,
+    storage_url_is_active,
+)
 from app.schemas.employee import EmployeeCreate, EmployeeUpdate
 from app.schemas.system_log import SystemLogCreate
 from app.services.system_log_service import SystemLogService
 from fastapi import HTTPException, status
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Cache TTL constants
 EMPLOYEES_LIST_TTL = 300   # 5 minutes
 EMPLOYEE_TTL = 600         # 10 minutes
+
+
+def _refresh_employee_photo_url(employee: dict) -> dict:
+    """
+    Checks the employee's presigned image URL. If it has expired or is about
+    to expire (< 1 day remaining), generates a fresh 7-day URL and persists
+    it to the DB. Returns the (possibly updated) employee dict.
+    """
+    url = employee.get("image_metadata")
+    if not url:
+        return employee
+
+    needs_refresh = storage_url_needs_refresh(url)
+
+    if needs_refresh:
+        # Double-check with a live HEAD request before bothering to regenerate
+        is_active = storage_url_is_active(url)
+        if not is_active or needs_refresh:
+            s3_key = storage_extract_key_from_url(url)
+            if s3_key:
+                try:
+                    new_url = storage_presigned_url(s3_key)
+                    db_execute(
+                        "UPDATE employees SET image_metadata = :url WHERE employee_id = :employee_id",
+                        {"url": new_url, "employee_id": employee["employee_id"]}
+                    )
+                    # Invalidate caches so next read sees fresh URL
+                    cache_delete(f"employees:{employee['employee_id']}")
+                    cache_delete_pattern("employees:list:*")
+                    employee = {**employee, "image_metadata": new_url}
+                    logger.info(
+                        "Refreshed presigned URL for employee %s", employee["employee_id"]
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to refresh presigned URL for employee %s: %s",
+                        employee.get("employee_id"), exc
+                    )
+
+    return employee
 
 
 class EmployeeService:
@@ -42,9 +91,12 @@ class EmployeeService:
                 params
             )
 
+            # Refresh any expired/expiring presigned URLs before caching
+            refreshed_employees = [_refresh_employee_photo_url(emp) for emp in result.data]
+
             response = {
-                "employees": result.data,
-                "total": len(result.data),
+                "employees": refreshed_employees,
+                "total": len(refreshed_employees),
                 "search": search if search else None,
                 "status_filter": status if status else None
             }
@@ -77,6 +129,7 @@ class EmployeeService:
                 )
 
             employee = result.data[0]
+            employee = _refresh_employee_photo_url(employee)
             cache_set(cache_key, employee, EMPLOYEE_TTL)
             return employee
 
